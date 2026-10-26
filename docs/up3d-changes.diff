@@ -1,0 +1,1529 @@
+diff --git a/UP3DCOMMON/up3d.c b/UP3DCOMMON/up3d.c
+index 5ae7751..8344339 100644
+--- a/UP3DCOMMON/up3d.c
++++ b/UP3DCOMMON/up3d.c
+@@ -101,7 +101,7 @@ bool UP3D_InsertRomProgram( uint8_t prog )
+   return true;
+ }
+ 
+-uint32_t UP3D_GetFreeBlocks()
++static int64_t _up3d_free_blocks(void)   /* -1 = the printer didn't answer */
+ {
+   static const uint8_t UP3D_CMD_46[] = { 0x46 };
+   uint8_t resp[2048];
+@@ -109,14 +109,21 @@ uint32_t UP3D_GetFreeBlocks()
+   if( (UP3DCOMM_Write( UP3D_CMD_46, sizeof(UP3D_CMD_46) ) != sizeof(UP3D_CMD_46)) ||
+       (5 != UP3DCOMM_Read( resp, sizeof(resp) )) ||
+       (6 != resp[4]) )
+-    return 0;
++    return -1;
+ 
+   return le32toh( *((uint32_t*)resp) );
+ }
+ 
++uint32_t UP3D_GetFreeBlocks()
++{
++  int64_t f = _up3d_free_blocks();
++  return f < 0 ? 0 : (uint32_t)f;
++}
++
+ bool UP3D_WriteBlocks( const UP3D_BLK *data, uint8_t blocks )
+ {
+   uint8_t send[2048];
++  int noanswer = 0, nospace = 0;
+   for( ;blocks>0; )
+   {
+     uint8_t b = blocks;
+@@ -126,7 +133,20 @@ bool UP3D_WriteBlocks( const UP3D_BLK *data, uint8_t blocks )
+ 
+     if( b>72 ) b = 72;                          //limit to max. 2048 bytes per logical packet
+ 
+-    uint32_t fblocks= UP3D_GetFreeBlocks();
++    /* Never wait forever: give up if the printer stops answering (switched off,
++       unplugged, reset) for ~3 s, or has no room for 60 s. Otherwise this program
++       would sit holding the USB connection and block every other tool. */
++    int64_t fb = _up3d_free_blocks();
++    if( fb < 0 )
++    {
++      if( ++noanswer >= 30 ) { fprintf(stderr, "ERROR: the printer stopped answering\n"); return false; }
++      usleep( 100000 );
++      continue;
++    }
++    noanswer = 0;
++    uint32_t fblocks = (uint32_t)fb;
++    if( fblocks == 0 && ++nospace >= 600 ) { fprintf(stderr, "ERROR: the printer has had no room for new data for 60 s\n"); return false; }
++    if( fblocks > 0 ) nospace = 0;
+     if( b>fblocks ) b = fblocks;
+ 
+     if( b>0 )
+@@ -158,6 +178,10 @@ bool UP3D_StartResumeProgram()
+   static const uint8_t UP3D_CMD_58[] = { 0x58 };
+   uint8_t resp[2048];
+ 
++  /* a STOP (or pause) request left set would end the new program at once */
++  if( UP3D_GetParameter(0x0D) ) UP3D_SetParameter(0x0D, 0);
++  if( UP3D_GetParameter(0x0C) ) UP3D_SetParameter(0x0C, 0);
++
+   if( (UP3DCOMM_Write( UP3D_CMD_58, sizeof(UP3D_CMD_58) ) != sizeof(UP3D_CMD_58)) ||
+       (0 == UP3DCOMM_Read( resp, sizeof(resp) )) /*||
+       (6 != resp[0])*/ )                                //returns "Exe Count: 0" 06
+diff --git a/UP3DCOMMON/up3dcomm.c b/UP3DCOMMON/up3dcomm.c
+index 3cbf4c4..5fdffd4 100644
+--- a/UP3DCOMMON/up3dcomm.c
++++ b/UP3DCOMMON/up3dcomm.c
+@@ -59,19 +59,49 @@ bool UP3DCOMM_Open()
+     _libusb_dev_handle = libusb_open_device_with_vid_pid( _libusb_ctx, VID, PID_CETUS_S7 );
+ 
+   
++  /* UP Box+ and later models may use a PID not listed above:
++     fall back to the first device with the Tiertime vendor ID. */
+   if( !_libusb_dev_handle )
+   {
+-    fprintf(stderr, "[ERROR] USB Open Device (%04X:%04X/%04X/%04X/%04X) not found\n", VID, PID_MINI_A, PID_MINI_M, PID_PLUS, PID_CETUS_S7 );
+-    UP3DCOMM_Close();
+-    return false;
++    libusb_device **list = NULL;
++    ssize_t n = libusb_get_device_list( _libusb_ctx, &list );
++    int last_err = 0, found = 0;
++    for( ssize_t i = 0; i < n && !_libusb_dev_handle; i++ )
++    {
++      struct libusb_device_descriptor d;
++      if( libusb_get_device_descriptor( list[i], &d ) != 0 || d.idVendor != VID )
++        continue;
++      found++;
++      last_err = libusb_open( list[i], &_libusb_dev_handle );
++      if( last_err != 0 )
++      {
++        fprintf(stderr, "[ERROR] Found UP printer %04X:%04X but could not open it: %s\n",
++                d.idVendor, d.idProduct, libusb_strerror( last_err ));
++        if( last_err == LIBUSB_ERROR_NOT_SUPPORTED || last_err == LIBUSB_ERROR_NOT_FOUND )
++          fprintf(stderr, "[HINT] Windows has no compatible USB driver for it. See README: Driver setup.\n");
++        if( last_err == LIBUSB_ERROR_ACCESS || last_err == LIBUSB_ERROR_BUSY )
++          fprintf(stderr, "[HINT] Another program (UP Studio?) is using the printer. Close it and retry.\n");
++        _libusb_dev_handle = NULL;
++      }
++    }
++    if( list ) libusb_free_device_list( list, 1 );
++    if( !_libusb_dev_handle )
++    {
++      if( !found )
++        fprintf(stderr, "[ERROR] No UP printer found on USB (vendor %04X). Is it plugged in and switched on?\n", VID );
++      UP3DCOMM_Close();
++      return false;
++    }
+   }
+ 
+   if( 1 == libusb_kernel_driver_active( _libusb_dev_handle, 0 ) )
+     libusb_detach_kernel_driver( _libusb_dev_handle, 0 );
+ 
+-  if( libusb_claim_interface( _libusb_dev_handle, 0 ) < 0 ) 
++  r = libusb_claim_interface( _libusb_dev_handle, 0 );
++  if( r < 0 ) 
+   {
+-    fprintf(stderr,"[ERROR] USB Claim Interface\n");
++    fprintf(stderr,"[ERROR] USB Claim Interface: %s\n", libusb_strerror( r ));
++    fprintf(stderr,"[HINT] Close UP Studio (and any other UP software) and retry.\n");
+     UP3DCOMM_Close();
+     return false;
+   }
+diff --git a/UP3DCOMMON/up3dconf.c b/UP3DCOMMON/up3dconf.c
+index f22df4d..2b807f0 100644
+--- a/UP3DCOMMON/up3dconf.c
++++ b/UP3DCOMMON/up3dconf.c
+@@ -46,7 +46,7 @@ settings_t settings_classic_plus = {
+ 
+ settings_t settings_box = { 
+   .steps_per_mm = { 644.0, 644.0, 854.0 },
+-  .max_rate = { 200, 200, 50 },
++  .max_rate = { 100, 100, 50 },   /* X/Y capped at the UP Box+ rated 100 mm/s (UP3D default was 200) */
+   .acceleration = { 1500, 1500, 1500 },
+   .junction_deviation = 0.1,
+   .x_axes =  1, .y_axes =  0,
+diff --git a/UP3DTOOLS/upcenter.c b/UP3DTOOLS/upcenter.c
+new file mode 100644
+index 0000000..762b907
+--- /dev/null
++++ b/UP3DTOOLS/upcenter.c
+@@ -0,0 +1,217 @@
++//////////////////////////////////////////////////////////////
++// up3dcenter: find where the bed centre is, in the coordinates
++// the transcoder uses (G-code X/Y relative to the home position).
++//
++// 1. initialise/home the printer (ROM program 0)
++// 2. run ROM program 3 ("move to centre, 10mm over bed")
++// 3. read the axis positions and convert them to G-code X/Y
++//
++// Output (last line, machine readable):
++//   CENTER X=<mm> Y=<mm> ZPOS=<mm>
++//
++// Added for UP Box+ USB Print (GPL v2, like the rest of UP3D).
++//////////////////////////////////////////////////////////////
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <inttypes.h>
++#include <unistd.h>
++#include <math.h>
++
++#include "up3d.h"
++#include "up3dconf.h"
++
++#define MSTATE_RUNNING 2
++#define MSTATE_IDLE    3
++
++#define MAXS 4000
++static int    ns = 0;
++static double sx[MAXS], sy[MAXS], sz[MAXS];
++static double g_steps[3];
++
++static void sample(void)
++{
++  if( ns >= MAXS ) return;
++  sx[ns] = (double)UP3D_GetAxisPosition(1) / g_steps[0];
++  sy[ns] = (double)UP3D_GetAxisPosition(2) / g_steps[1];
++  sz[ns] = (double)UP3D_GetAxisPosition(3) / g_steps[2];
++  ns++;
++}
++
++static bool run_rom_and_wait(uint8_t prog, int timeout_s, bool record)
++{
++  if( !UP3D_ClearProgramBuf() || !UP3D_InsertRomProgram(prog) || !UP3D_StartResumeProgram() )
++  {
++    printf("ERROR: could not start printer routine %u\n", prog);
++    return false;
++  }
++  bool seen_running = false;
++  int per_s = record ? 10 : 4;
++  for( int i = 0; i < timeout_s * per_s; i++ )
++  {
++    usleep( (1000/per_s) * 1000 );
++    if( record ) sample();
++    int32_t m = UP3D_GetMachineState();
++    if( m == MSTATE_RUNNING ) seen_running = true;
++    if( m == MSTATE_IDLE && (seen_running || i > 2*per_s) ) return true;
++    if( m == 0 ) { printf("ERROR: printer reports a system error\n"); return false; }
++  }
++  printf("ERROR: printer routine %u did not finish within %d s\n", prog, timeout_s);
++  return false;
++}
++
++/* Move the nozzle to slicer X/Y (same coordinate mapping as the converter),
++   homing first the same way a converted print does. Bed stays at Z home (low). */
++static int do_goto(double gx, double gy, bool home)
++{
++  UP3D_BLK blk, b2[2];
++  if( !UP3D_ClearProgramBuf() ) { printf("ERROR: printer busy\n"); return 4; }
++  UP3D_PROG_BLK_Power(&blk,true); UP3D_WriteBlock(&blk);
++  if( home )
++  {
++    UP3D_PROG_BLK_Home(&blk, settings.y_axes, settings.y_dir, settings.y_hofs_hi, settings.y_hspeed_hi); UP3D_WriteBlock(&blk);
++    UP3D_PROG_BLK_Home(&blk, settings.y_axes, settings.y_dir, settings.y_hofs_lo, settings.y_hspeed_lo); UP3D_WriteBlock(&blk);
++    UP3D_PROG_BLK_Home(&blk, settings.x_axes, settings.x_dir, settings.x_hofs_hi, settings.x_hspeed_hi); UP3D_WriteBlock(&blk);
++    UP3D_PROG_BLK_Home(&blk, settings.x_axes, settings.x_dir, settings.x_hofs_lo, settings.x_hspeed_lo); UP3D_WriteBlock(&blk);
++    UP3D_PROG_BLK_Home(&blk, UP3DAXIS_Z, settings.z_dir, settings.z_hofs_hi, settings.z_hspeed_hi); UP3D_WriteBlock(&blk);
++    UP3D_PROG_BLK_Home(&blk, UP3DAXIS_Z, settings.z_dir, settings.z_hofs_lo, settings.z_hspeed_lo); UP3D_WriteBlock(&blk);
++  }
++  double topos[2], feed = 3000.0; /* mm/min */
++  topos[settings.x_axes] = gx * settings.x_dir;
++  topos[settings.y_axes] = gy * settings.y_dir;
++  UP3D_PROG_BLK_MoveF( b2, -feed, topos[0], -feed, topos[1], -600.0, 0, 0, 0 );
++  UP3D_WriteBlocks( b2, 2 );
++  UP3D_PROG_BLK_Stop(&blk); UP3D_WriteBlock(&blk);
++  if( !UP3D_StartResumeProgram() ) { printf("ERROR: could not start the move\n"); return 5; }
++
++  printf(home ? "Homing, then moving...\n" : "Moving...\n"); fflush(stdout);
++  bool seen = false;
++  for( int i = 0; i < 120*4; i++ )
++  {
++    usleep(250*1000);
++    int32_t m = UP3D_GetMachineState();
++    if( m == MSTATE_RUNNING ) seen = true;
++    if( m == MSTATE_IDLE && (seen || i > 8) ) break;
++    if( m == 0 ) { printf("ERROR: printer reports a system error\n"); return 6; }
++  }
++  double a1 = (double)UP3D_GetAxisPosition(1) / g_steps[0];
++  double a2 = (double)UP3D_GetAxisPosition(2) / g_steps[1];
++  printf("AT X=%.2f Y=%.2f (motors %.2f %.2f)\n", gx, gy, a1, a2);
++  return 0;
++}
++
++int main(int argc, char *argv[])
++{
++  char mtype = (argc > 1) ? argv[1][0] : 'b';
++  switch( mtype )
++  {
++    case 'm': memcpy(&settings,&settings_mini,sizeof(settings)); break;
++    case 'c': case 'p': memcpy(&settings,&settings_classic_plus,sizeof(settings)); break;
++    case 'C': memcpy(&settings,&settings_cetus,sizeof(settings)); break;
++    default:  memcpy(&settings,&settings_box,sizeof(settings)); break;
++  }
++
++  if( !UP3D_Open() )
++    return 2;
++
++  if( !UP3D_IsPrinterResponsive() )
++  {
++    printf("ERROR: UP printer is not responding\n");
++    UP3D_Close();
++    return 3;
++  }
++
++  TT_tagPrinterInfoHeader pihdr;
++  TT_tagPrinterInfoName   piname;
++  TT_tagPrinterInfoData   pidata;
++  TT_tagPrinterInfoSet    pisets[8];
++  /* axis positions are read in motor steps: use the printer's own steps/mm
++     (the converter's 3rd value is the extruder, not Z; Z moves are sent in mm) */
++  double *steps = g_steps;
++  steps[0] = settings.steps_per_mm[0]; steps[1] = settings.steps_per_mm[1]; steps[2] = 854.0;
++  if( UP3D_GetPrinterInfo( &pihdr, &piname, &pidata, pisets ) )
++  {
++    printf("Printer: %s\n", piname.printer_name);
++    printf("Printer steps/mm: X %.1f  Y %.1f  Z %.1f   (converter uses %.1f / %.1f for X / Y)\n",
++           pidata.f_steps_mm_x, pidata.f_steps_mm_y, pidata.f_steps_mm_z,
++           settings.steps_per_mm[0], settings.steps_per_mm[1]);
++    if( pidata.f_steps_mm_x > 1 ) steps[0] = pidata.f_steps_mm_x;
++    if( pidata.f_steps_mm_y > 1 ) steps[1] = pidata.f_steps_mm_y;
++    if( pidata.f_steps_mm_z > 1 ) steps[2] = pidata.f_steps_mm_z;
++  }
++
++  if( argc >= 5 && !strcmp(argv[2], "goto") )
++  {
++    double gx = atof(argv[3]), gy = atof(argv[4]);
++    bool home = !(argc >= 6 && !strcmp(argv[5], "nohome"));
++    int r = do_goto( gx, gy, home );
++    UP3D_Close();
++    return r;
++  }
++
++  /* probe: run the printer's own initialise routine; on the Box+ it ends
++     with the head over the bed centre. Report that as a starting guess. */
++  printf("Homing (printer's own start-up routine)...\n"); fflush(stdout);
++  if( !run_rom_and_wait(0, 180, false) ) { UP3D_Close(); return 4; }
++  {
++    double a[3];
++    for( int k = 0; k < 3; k++ ) a[k] = (double)UP3D_GetAxisPosition(k+1) / g_steps[k];
++    double gx = a[settings.x_axes] / settings.x_dir, gy = a[settings.y_axes] / settings.y_dir;
++    printf("Start-up routine ended at motors %.2f %.2f %.2f\n", a[0], a[1], a[2]);
++    printf("GUESS X=%.2f Y=%.2f\n", gx, gy);
++    UP3D_Close();
++    return 0;
++  }
++
++  printf("Moving to bed centre...\n"); fflush(stdout);
++  ns = 0; sample();                       /* position before the move (home) */
++  if( !run_rom_and_wait(3, 90, true) ) { UP3D_Close(); return 5; }
++  sample();
++
++  /* The Box+ goes back home after visiting the centre, so look through the
++     recorded path: the centre is where the bed was raised highest (Z furthest
++     from home) and the head furthest from its home X/Y. */
++  double hx = sx[0], hy = sy[0], hz = sz[0];
++  double zmax = 0;
++  for( int i = 0; i < ns; i++ ) if( fabs(sz[i]-hz) > zmax ) zmax = fabs(sz[i]-hz);
++  int best = -1; double bestd = -1;
++  for( int i = 0; i < ns; i++ )
++  {
++    if( fabs(sz[i]-hz) < zmax - 0.5 ) continue;
++    double d = (sx[i]-hx)*(sx[i]-hx) + (sy[i]-hy)*(sy[i]-hy);
++    if( d > bestd ) { bestd = d; best = i; }
++  }
++
++  /* compact path for the log: points where the head paused */
++  printf("Path (A1 A2 A3, mm), %d samples:\n", ns);
++  for( int i = 0; i < ns; i++ )
++  {
++    bool still = (i>0) && fabs(sx[i]-sx[i-1])<0.01 && fabs(sy[i]-sy[i-1])<0.01 && fabs(sz[i]-sz[i-1])<0.01;
++    bool next_moves = (i+1<ns) && !(fabs(sx[i+1]-sx[i])<0.01 && fabs(sy[i+1]-sy[i])<0.01 && fabs(sz[i+1]-sz[i])<0.01);
++    if( i==0 || i==ns-1 || (still && next_moves) )
++      printf("  #%d  %.2f  %.2f  %.2f\n", i, sx[i], sy[i], sz[i]);
++  }
++
++  if( best < 0 || zmax < 1.0 )
++  {
++    printf("ERROR: the head never moved away from home - could not find the centre\n");
++    UP3D_Close();
++    return 6;
++  }
++
++  double mm[3] = { sx[best], sy[best], sz[best] };
++  // transcoder: motor[x_axes] = X * x_dir, motor[y_axes] = Y * y_dir
++  double gx = mm[settings.x_axes] / settings.x_dir;
++  double gy = mm[settings.y_axes] / settings.y_dir;
++
++  printf("Centre sample #%d: A1 %.2f  A2 %.2f  A3 %.2f (bed raised %.2f mm from home)\n",
++         best, mm[0], mm[1], mm[2], zmax);
++  printf("If the nozzle was 10 mm above the bed there, nozzle height is about %.2f mm\n", zmax + 10.0);
++  printf("CENTER X=%.2f Y=%.2f ZPOS=%.2f ZRAISE=%.2f\n", gx, gy, mm[2], zmax);
++
++  UP3D_Close();
++  return 0;
++}
+diff --git a/UP3DTOOLS/upctl.c b/UP3DTOOLS/upctl.c
+new file mode 100644
+index 0000000..12980e3
+--- /dev/null
++++ b/UP3DTOOLS/upctl.c
+@@ -0,0 +1,159 @@
++//////////////////////////////////////////////////////////////
++// up3dctl: printer controls for UP Box+ USB Print
++//
++//   up3dctl box home
++//   up3dctl box jog <dx> <dy> <dz>          slicer-frame mm; +dz moves the bed down
++//   up3dctl box extrude <temp> <mm> [mm/min]   heat, wait until hot, push filament
++//   up3dctl box withdraw <temp> <mm>          heat, wait until hot, pull filament, heater off
++//   add --dry=<file> to only write the program (testing)
++//
++// Programs are built with the converter's own writer (same moves/heating as a
++// print) and sent to the printer: small ones straight into the program buffer,
++// larger ones through the SD card like a print.
++// Added for UP Box+ USB Print (GPL v2, like the rest of UP3D).
++//////////////////////////////////////////////////////////////
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <inttypes.h>
++#include <unistd.h>
++
++#include "up3d.h"
++#include "up3dconf.h"
++#include "umcwriter.h"
++
++static void usage(void)
++{
++  printf("Usage: up3dctl box home | jog dx dy dz | extrude temp mm [mm/min] | withdraw temp mm  [--dry=file]\n");
++  exit(2);
++}
++
++static bool send_direct(UP3D_BLK *blks, long n)
++{
++  if( !UP3D_ClearProgramBuf() ) return false;
++  for( long i = 0; i < n; i += 64 )
++  {
++    long c = (n - i) > 64 ? 64 : (n - i);
++    if( !UP3D_WriteBlocks( blks + i, (uint8_t)c ) ) return false;
++  }
++  return UP3D_StartResumeProgram();
++}
++
++static bool send_sd(UP3D_BLK *blks, long n)
++{
++  UP3D_SetParameter(PARA_RED_BLUE_BLINK,10);
++  UP3D_SetParameter(PARA_PRINT_STATUS,0x13); //write to SD
++  if( !UP3D_ClearProgramBuf() ) return false;
++  uint8_t program_id = 5;
++  if( !UP3D_UseSDProgramBuf( program_id, true ) ) return false;
++  for( long i = 0; i < n; i += 72 )
++  {
++    long c = (n - i) > 72 ? 72 : (n - i);
++    if( !UP3D_WriteBlocks( blks + i, (uint8_t)c ) ) return false;
++  }
++  for( int w = 0; w < 100 && UP3D_GetParameter(0xC6) != (uint32_t)n; w++ )
++    usleep(50*1000);
++  if( UP3D_GetParameter(0xC6) != (uint32_t)n ) return false;
++  UP3D_SetParameter(PARA_RED_BLUE_BLINK,0);
++  UP3D_SetParameter(PARA_PRINT_STATUS,0x1);
++  if( !UP3D_ClearProgramBuf() ) return false;
++  if( !UP3D_UseSDProgramBuf( program_id, false ) ) return false;
++  return UP3D_StartResumeProgram();
++}
++
++int main(int argc, char *argv[])
++{
++  if( argc < 3 ) usage();
++  memcpy( &settings, &settings_box, sizeof(settings) );
++
++  const char *dry = NULL;
++  for( int i = 1; i < argc; i++ )
++    if( !strncmp(argv[i], "--dry=", 6) ) { dry = argv[i] + 6; argc = i; break; }
++
++  char path[1024];
++  if( dry ) snprintf(path, sizeof(path), "%s", dry);
++  else
++  {
++    const char *tmp = getenv("TEMP"); if( !tmp ) tmp = getenv("TMPDIR"); if( !tmp ) tmp = ".";
++    snprintf(path, sizeof(path), "%s/up3dctl.umc", tmp);
++  }
++  if( !umcwriter_open_raw( path, 'b' ) ) { printf("ERROR: cannot write %s\n", path); return 3; }
++
++  const char *cmd = argv[2];
++  UP3D_BLK blk, b2[2];
++  UP3D_PROG_BLK_Power(&blk, true); umcwriter_write_raw(&blk, 1);
++
++  if( !strcmp(cmd, "home") )
++  {
++    umcwriter_home(0); umcwriter_home(1); umcwriter_home(2);
++    printf("Homing all axes\n");
++  }
++  else if( !strcmp(cmd, "jog") && argc >= 6 )
++  {
++    double dx = atof(argv[3]), dy = atof(argv[4]), dz = atof(argv[5]);
++    if( dx != 0 || dy != 0 )
++      umcwriter_planner_add( dx, dy, 0, 3000 );          /* 50 mm/s, with the print planner's acceleration */
++    if( dz != 0 )
++    {
++      /* relative move (positive speeds = relative, as in the printer's own routines) */
++      UP3D_PROG_BLK_MoveF( b2, 1000, 0, 1000, 0, 8, dz, 1000, 0 );
++      umcwriter_write_raw( b2, 2 );
++    }
++    printf("Jog X%+.2f Y%+.2f Z%+.2f\n", dx, dy, dz);
++  }
++  else if( !strcmp(cmd, "extrude") && argc >= 5 )
++  {
++    double t = atof(argv[3]), mm = atof(argv[4]), f = (argc >= 6) ? atof(argv[5]) : 120;
++    if( t < 170 || t > 300 ) { printf("ERROR: temperature %.0f outside 170-300\n", t); return 4; }
++    if( mm <= 0 || mm > 200 ) { printf("ERROR: length %.0f outside 1-200 mm\n", mm); return 4; }
++    if( f < 30 || f > 600 ) f = 120;
++    umcwriter_set_extruder_temp( t, true );              /* heats, then waits for the printer's "hot enough" flag */
++    umcwriter_beep(300);
++    umcwriter_planner_add( 0, 0, mm, f );
++    umcwriter_planner_sync();
++    umcwriter_beep(300);
++    printf("Extrude %.0f mm at %.0f C (%.0f mm/min); heater stays on\n", mm, t, f);
++  }
++  else if( !strcmp(cmd, "withdraw") && argc >= 5 )
++  {
++    double t = atof(argv[3]), mm = atof(argv[4]);
++    if( t < 170 || t > 300 ) { printf("ERROR: temperature %.0f outside 170-300\n", t); return 4; }
++    if( mm <= 0 || mm > 300 ) { printf("ERROR: length %.0f outside 1-300 mm\n", mm); return 4; }
++    umcwriter_set_extruder_temp( t, true );
++    umcwriter_beep(300);
++    double slow = mm < 10 ? mm : 10;
++    umcwriter_planner_add( 0, 0, -slow, 180 );           /* ease the tip out of the melt zone */
++    if( mm > slow ) umcwriter_planner_add( 0, 0, -mm, 900 );
++    umcwriter_planner_sync();
++    umcwriter_set_extruder_temp( 0, false );            /* heater off */
++    umcwriter_beep(300);
++    printf("Withdraw %.0f mm at %.0f C; heater off afterwards\n", mm, t);
++  }
++  else
++  {
++    usage();
++  }
++  umcwriter_close_raw();
++
++  FILE *f = fopen(path, "rb");
++  if( !f ) { printf("ERROR: cannot read %s\n", path); return 3; }
++  fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET);
++  long n = len / (long)sizeof(UP3D_BLK);
++  UP3D_BLK *blks = (UP3D_BLK*)malloc(len > 0 ? len : 1);
++  if( fread(blks, sizeof(UP3D_BLK), n, f) != (size_t)n ) { printf("ERROR: read\n"); return 3; }
++  fclose(f);
++  printf("Program: %ld blocks\n", n);
++  if( dry ) return 0;
++
++  if( !UP3D_Open() ) return 5;
++  if( !UP3D_IsPrinterResponsive() ) { printf("ERROR: UP printer is not responding\n"); UP3D_Close(); return 6; }
++  bool ok = (n <= 60) ? send_direct(blks, n) : send_sd(blks, n);
++  UP3D_Close();
++  free(blks);
++  if( !ok ) { printf("ERROR: could not send the command to the printer\n"); return 7; }
++  printf("Sent\n");
++  return 0;
++}
+diff --git a/UP3DTOOLS/upsnap.c b/UP3DTOOLS/upsnap.c
+new file mode 100644
+index 0000000..b94654f
+--- /dev/null
++++ b/UP3DTOOLS/upsnap.c
+@@ -0,0 +1,71 @@
++//////////////////////////////////////////////////////////////
++// up3dsnap: READ-ONLY snapshot of the printer's settings memory.
++//
++//   up3dsnap <output.txt>
++//
++// Uses only read commands: 0x76 (read one parameter, 0x00-0xFF)
++// and 0x52 (read the printer information block). Nothing is written.
++// Two snapshots taken before/after changing something in UP Studio
++// show where that value lives.
++// Added for UP Box+ USB Print (GPL v2, like the rest of UP3D).
++//////////////////////////////////////////////////////////////
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <time.h>
++
++#include "up3d.h"
++
++static void hexdump(FILE *f, const char *title, const uint8_t *p, size_t n)
++{
++  fprintf(f, "[%s] %u bytes\n", title, (unsigned)n);
++  for( size_t i = 0; i < n; i += 16 )
++  {
++    fprintf(f, "  %04X ", (unsigned)i);
++    for( size_t j = i; j < i + 16 && j < n; j++ ) fprintf(f, " %02X", p[j]);
++    fprintf(f, "\n");
++  }
++}
++
++int main(int argc, char *argv[])
++{
++  if( argc != 2 ) { printf("Usage: up3dsnap output.txt\n"); return 2; }
++  FILE *f = fopen(argv[1], "w");
++  if( !f ) { printf("ERROR: cannot write %s\n", argv[1]); return 3; }
++
++  if( !UP3D_Open() ) { fclose(f); return 4; }
++  if( !UP3D_IsPrinterResponsive() ) { printf("ERROR: UP printer is not responding\n"); UP3D_Close(); fclose(f); return 5; }
++
++  time_t now = time(NULL);
++  fprintf(f, "UP3D read-only snapshot  %s", ctime(&now));
++  fprintf(f, "[parameters] id = unsigned (hex) signed float\n");
++  for( int p = 0; p < 256; p++ )
++  {
++    uint32_t v = UP3D_GetParameter((uint8_t)p);
++    float fl; memcpy(&fl, &v, 4);
++    fprintf(f, "P%02X = %u (0x%08X) %d %g\n", p, v, v, (int32_t)v, fl);
++  }
++
++  TT_tagPrinterInfoHeader pihdr; TT_tagPrinterInfoName piname; TT_tagPrinterInfoData pidata; TT_tagPrinterInfoSet pisets[8];
++  memset(pisets, 0, sizeof(pisets));
++  if( UP3D_GetPrinterInfo( &pihdr, &piname, &pidata, pisets ) )
++  {
++    hexdump(f, "info header", (uint8_t*)&pihdr, sizeof(pihdr));
++    hexdump(f, "info name", (uint8_t*)&piname, sizeof(piname));
++    hexdump(f, "info data", (uint8_t*)&pidata, sizeof(pidata));
++    for( uint32_t s = 0; s < pidata.u32_NumSets && s < 8; s++ )
++    {
++      char t[32]; snprintf(t, sizeof(t), "info set %u", s);
++      hexdump(f, t, (uint8_t*)&pisets[s], sizeof(pisets[s]));
++    }
++  }
++  else fprintf(f, "[info] could not read\n");
++
++  UP3D_Close();
++  fclose(f);
++  printf("Snapshot saved: %s\n", argv[1]);
++  return 0;
++}
+diff --git a/UP3DTOOLS/upstatus.c b/UP3DTOOLS/upstatus.c
+index b00ee6b..4782bd3 100644
+--- a/UP3DTOOLS/upstatus.c
++++ b/UP3DTOOLS/upstatus.c
+@@ -26,12 +26,13 @@
+ 
+ #include "compat.h"
+ #include "up3d.h"
++#include "up3dconf.h"
+ 
+ 
+ void print_usage_and_exit(char *name)
+ {
+-  printf("Usage: %s [stop | on | off]\n\n", name);
+-  printf("          stop:  stops current print and reports status\n");
++  printf("Usage: %s [stop | pos | on | off | init | heat <C> | bed <C> [minutes] | cool]\n\n", name);
++  printf("          stop:  stops the current job (also from SD card), heaters off\n");
+   printf("          on:    switch printer on and reports status\n");
+   printf("          off:   switch printer off and reports status\n");
+   printf("          no parameter reports current printer status:\n");
+@@ -49,23 +50,126 @@ void print_usage_and_exit(char *name)
+ }
+ 
+ 
++/* Heaters off straight away (direct parameter writes, not program blocks:
++   while a job runs from the SD card the program buffer is not read). */
++static void heaters_off_now(void)
++{
++  UP3D_SetParameter(PARA_HEATER_NOZZLE1_ON, 0);
++  UP3D_SetParameter(PARA_NOZZLE1_TEMP, 0);
++  UP3D_SetParameter(PARA_HEATER_BED_ON, 0);
++  UP3D_SetParameter(PARA_BED_TEMP, 0);
++}
++
++/* program state (param 0x01): 0 stopped, 1 running, 2 paused, 3 error */
++static bool wait_program_not_running(int ms)
++{
++  for( int t = 0; t <= ms; t += 250 )
++  {
++    int32_t ps = UP3D_GetParameter(0x01);
++    int32_t ms_ = UP3D_GetParameter(0x00);
++    if( ps != 1 && ms_ != 2 ) return true;
++    usleep(250*1000);
++  }
++  return false;
++}
++
++/* STOP: use the printer's own "stop program" request (param 0x0D), which
++   works for jobs running from the SD card. Heaters off as well. If the
++   printer ignores it, pause the program (0x0C) so the motion halts.
++   Never calls Start/Resume (that could restart the job). */
++static int do_stop(void)
++{
++  int32_t m0 = UP3D_GetParameter(0x00), p0 = UP3D_GetParameter(0x01);
++  printf("Before stop: machine state %d, program state %d\n", m0, p0);
++  fflush(stdout);
++
++  bool sent = UP3D_SetParameter(0x0D, 1);
++  heaters_off_now();
++  UP3D_SetParameter(0x1C, 0);                 /* "not printing" */
++  if( !sent ) { printf("ERROR: the printer did not accept the stop request\n"); return 10; }
++
++  if( wait_program_not_running(5000) )
++  {
++    UP3D_ClearProgramBuf();
++    usleep(300*1000);
++    UP3D_SetParameter(0x0D, 0);               /* ready for the next job */
++    printf("STOPPED: machine state %d, program state %d. Heaters off.\n",
++           UP3D_GetParameter(0x00), UP3D_GetParameter(0x01));
++    return 0;
++  }
++
++  printf("Stop request not obeyed after 5 s - pausing the program instead\n"); fflush(stdout);
++  UP3D_SetParameter(0x0C, 1);
++  heaters_off_now();
++  if( wait_program_not_running(5000) )
++  {
++    printf("PAUSED: motion halted and heaters off, but the job is only paused.\n"
++           "Press the button on the printer to end it.\n");
++    return 11;
++  }
++  printf("ERROR: the printer is still running the job (machine state %d, program state %d).\n"
++         "Use the button on the printer.\n", UP3D_GetParameter(0x00), UP3D_GetParameter(0x01));
++  return 12;
++}
++
++/* pos: wait until the printer has finished moving, then report where the
++   head and bed are (Z = bed position in mm from Z home, bed up = negative,
++   the same frame the converter uses). Used by nozzle height calibration. */
++static int do_pos(void)
++{
++  int i, still = 0;
++  usleep(600*1000);                            /* let a just-sent move start */
++  for( i = 0; i < 240; i++ )                   /* up to 60 s */
++  {
++    if( UP3D_GetParameter(0x00) != 2 && UP3D_GetParameter(0x01) != 1 ) { if( ++still >= 2 ) break; }
++    else still = 0;
++    usleep(250*1000);
++  }
++  if( i == 240 ) { printf("ERROR: the printer is still moving\n"); return 3; }
++  usleep(200*1000);
++
++  double steps[3] = { 644.0, 644.0, 3220.0 };
++  TT_tagPrinterInfoHeader pihdr; TT_tagPrinterInfoName piname; TT_tagPrinterInfoData pidata; TT_tagPrinterInfoSet pisets[8];
++  if( UP3D_GetPrinterInfo( &pihdr, &piname, &pidata, pisets ) )
++  {
++    if( pidata.f_steps_mm_x > 1 ) steps[0] = pidata.f_steps_mm_x;
++    if( pidata.f_steps_mm_y > 1 ) steps[1] = pidata.f_steps_mm_y;
++    if( pidata.f_steps_mm_z > 1 ) steps[2] = pidata.f_steps_mm_z;
++  }
++  UP3D_SetParameter(0x94, 999);                /* full precision position reports */
++  usleep(100*1000);
++  int32_t raw[3];
++  for( int k = 0; k < 3; k++ ) raw[k] = UP3D_GetAxisPosition(k+1);
++  UP3D_SetParameter(0x94, 0);
++  double gx = (raw[settings_box.x_axes] / steps[settings_box.x_axes]) / settings_box.x_dir;
++  double gy = (raw[settings_box.y_axes] / steps[settings_box.y_axes]) / settings_box.y_dir;
++  double z  = raw[2] / steps[2];
++  printf("Z steps %d at %.1f steps/mm\n", raw[2], steps[2]);
++  printf("POS %.3f %.3f %.3f\n", gx, gy, z);
++  return 0;
++}
++
+ int main(int argc, char *argv[])
+ {
+-  if (argc > 2)
++  if (argc > 4)
+     print_usage_and_exit(argv[0]);
+   
+   if( !UP3D_Open() )
+     return -1;
+   
+-  if (argc == 2)
++  if (argc >= 2)
+   {
+     if ( !strcmp(argv[1], "stop") )
+     {
+-      UP3D_BLK blk;
+-      UP3D_ClearProgramBuf();
+-      UP3D_PROG_BLK_SetParameter(&blk,0x1C,0); UP3D_WriteBlock(&blk); //not printing...
+-      UP3D_PROG_BLK_Stop(&blk);UP3D_WriteBlock(&blk);
+-      UP3D_StartResumeProgram();
++      int r = do_stop();
++      UP3D_Close();
++      return r;
++    }
++    else if ( !strcmp(argv[1], "pos") )
++    {
++      int r = do_pos();
++      UP3D_Close();
++      return r;
+     }
+     else if ( !strcmp(argv[1], "on") )
+     {
+@@ -83,6 +187,54 @@ int main(int argc, char *argv[])
+       UP3D_PROG_BLK_Stop(&blk);UP3D_WriteBlock(&blk);
+       UP3D_StartResumeProgram();
+     }
++    else if ( !strcmp(argv[1], "init") )
++    {
++      /* the printer's own initialise routine (homes and parks) */
++      UP3D_ClearProgramBuf();
++      UP3D_InsertRomProgram(0);
++      UP3D_StartResumeProgram();
++    }
++    else if ( (!strcmp(argv[1], "heat") || !strcmp(argv[1], "bed")) && (argc == 3 || argc == 4) )
++    {
++      /* same parameter blocks the converter uses for M104 / M140 */
++      int t = atoi(argv[2]);
++      bool nozzle = !strcmp(argv[1], "heat");
++      if( t < 0 || t > (nozzle ? 300 : 110) ) { UP3D_Close(); printf("ERROR: temperature out of range\n"); return 2; }
++      UP3D_BLK blk;
++      UP3D_ClearProgramBuf();
++      if( t ) { UP3D_PROG_BLK_Power(&blk,true); UP3D_WriteBlock(&blk); }
++      if( nozzle )
++      {
++        if( t ) { UP3D_PROG_BLK_SetParameter(&blk,0x17,1); UP3D_WriteBlock(&blk);
++                  UP3D_PROG_BLK_SetParameter(&blk,0x41,t); UP3D_WriteBlock(&blk); }
++        UP3D_PROG_BLK_SetParameter(&blk,PARA_NOZZLE1_TEMP,t); UP3D_WriteBlock(&blk);
++        UP3D_PROG_BLK_SetParameter(&blk,PARA_HEATER_NOZZLE1_ON,t?1:0); UP3D_WriteBlock(&blk);
++      }
++      else
++      {
++        if( t ) { UP3D_PROG_BLK_SetParameter(&blk,0x35,0); UP3D_WriteBlock(&blk);
++                  UP3D_PROG_BLK_SetParameter(&blk,0x43,t); UP3D_WriteBlock(&blk); }
++        UP3D_PROG_BLK_SetParameter(&blk,PARA_BED_TEMP,t); UP3D_WriteBlock(&blk);
++        /* bed heater value is a countdown in 2 s units (default 30 min) */
++        int minutes = (argc == 4) ? atoi(argv[3]) : 30;
++        if( minutes < 1 ) minutes = 1;
++        if( minutes > 240 ) minutes = 240;
++        UP3D_PROG_BLK_SetParameter(&blk,PARA_HEATER_BED_ON,t?(minutes*30):0); UP3D_WriteBlock(&blk);
++      }
++      UP3D_PROG_BLK_Stop(&blk); UP3D_WriteBlock(&blk);
++      UP3D_StartResumeProgram();
++    }
++    else if ( !strcmp(argv[1], "cool") )
++    {
++      UP3D_BLK blk;
++      UP3D_ClearProgramBuf();
++      UP3D_PROG_BLK_SetParameter(&blk,PARA_NOZZLE1_TEMP,0); UP3D_WriteBlock(&blk);
++      UP3D_PROG_BLK_SetParameter(&blk,PARA_HEATER_NOZZLE1_ON,0); UP3D_WriteBlock(&blk);
++      UP3D_PROG_BLK_SetParameter(&blk,PARA_BED_TEMP,0); UP3D_WriteBlock(&blk);
++      UP3D_PROG_BLK_SetParameter(&blk,PARA_HEATER_BED_ON,0); UP3D_WriteBlock(&blk);
++      UP3D_PROG_BLK_Stop(&blk); UP3D_WriteBlock(&blk);
++      UP3D_StartResumeProgram();
++    }
+     else
+     {
+       UP3D_Close();
+@@ -99,8 +251,29 @@ int main(int argc, char *argv[])
+   int32_t percent = UP3D_GetPercent();
+   int32_t tr = UP3D_GetTimeRemaining();
+ 
++  /* extra fields for the app: targets, heater states and head position */
++  int32_t nset = UP3D_GetHeaterSetTemp(1), non = UP3D_GetHeaterState(1), nreached = UP3D_GetHeaterTempReached(1);
++  int32_t bset = UP3D_GetHeaterSetTemp(3), bon = UP3D_GetHeaterState(3);
++  double steps[3] = { 644.0, 644.0, 3220.0 };
++  uint32_t serial = 0;
++  {
++    TT_tagPrinterInfoHeader pihdr; TT_tagPrinterInfoName piname; TT_tagPrinterInfoData pidata; TT_tagPrinterInfoSet pisets[8];
++    if( UP3D_GetPrinterInfo( &pihdr, &piname, &pidata, pisets ) )
++    {
++      serial = pihdr.u32_printerserial;
++      if( pidata.f_steps_mm_x > 1 ) steps[0] = pidata.f_steps_mm_x;
++      if( pidata.f_steps_mm_y > 1 ) steps[1] = pidata.f_steps_mm_y;
++      if( pidata.f_steps_mm_z > 1 ) steps[2] = pidata.f_steps_mm_z;
++    }
++  }
++  double a[3];
++  for( int k = 0; k < 3; k++ ) a[k] = (double)UP3D_GetAxisPosition(k+1) / steps[k];
++  /* slicer-frame X/Y before the bed-centre offset (same mapping as the converter) */
++  double gx = a[settings_box.x_axes] / settings_box.x_dir, gy = a[settings_box.y_axes] / settings_box.y_dir;
++
+   
+-  printf("%s;%s;%s;%0.2f;%d;%0.2f;%d;%d\n",
++  float btemp = UP3D_GetHeaterTemp(3);   /* platform temperature (3rd heater channel) */
++  printf("%s;%s;%s;%0.2f;%d;%0.2f;%d;%d;%d;%d;%d;%d;%d;%0.2f;%0.2f;%0.2f;%0.2f;%u\n",
+          UP3D_STR_MACHINE_STATE[mstat],
+          UP3D_STR_PROGRAM_STATE[pstat],
+          UP3D_STR_SYSTEM_STATE[sstat],
+@@ -108,7 +281,8 @@ int main(int argc, char *argv[])
+          layer,
+          height,
+          percent,
+-         tr );
++         tr,
++         nset, non, nreached, bset, bon, gx, gy, a[2], btemp, serial );
+   
+   UP3D_Close();
+   return 0;
+diff --git a/UP3DTRANSCODE/gcodeparser.c b/UP3DTRANSCODE/gcodeparser.c
+index 59a8f98..d26792e 100644
+--- a/UP3DTRANSCODE/gcodeparser.c
++++ b/UP3DTRANSCODE/gcodeparser.c
+@@ -24,6 +24,7 @@
+ #include <string.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <math.h>
+ 
+ static unsigned int gcp_line_number;
+ static unsigned int gcp_file_line_number;
+@@ -33,6 +34,42 @@ static bool gcp_use_extruder_absoulte;
+ static double gcp_X,gcp_Y,gcp_Z,gcp_E,gcp_F;
+ 
+ static double gcp_Z_max_used;
++static double gcp_ofs_X = 0, gcp_ofs_Y = 0;   /* slicer origin -> machine origin */
++static bool   gcp_rot180 = false;             /* turn the part 180 deg about the bed centre */
++#define OUT_X(x) ((gcp_rot180 ? -(x) : (x)) + gcp_ofs_X)
++#define OUT_Y(y) ((gcp_rot180 ? -(y) : (y)) + gcp_ofs_Y)
++
++/* commands we skip instead of aborting (counted for a summary) */
++#define GCP_MAX_IGNORED 32
++static char         gcp_ignored_name[GCP_MAX_IGNORED][12];
++static unsigned int gcp_ignored_count[GCP_MAX_IGNORED];
++static unsigned int gcp_ignored_n = 0;
++
++static void gcp_note_ignored(const char* line)
++{
++  char name[12]; int i = 0;
++  while( line[i] && line[i]!=' ' && line[i]!='\r' && line[i]!='\n' && line[i]!=';' && i<11 ) { name[i]=line[i]; i++; }
++  name[i]=0;
++  for( unsigned int k=0; k<gcp_ignored_n; k++ )
++    if( !strcmp(gcp_ignored_name[k],name) ) { gcp_ignored_count[k]++; return; }
++  if( gcp_ignored_n < GCP_MAX_IGNORED )
++  {
++    strcpy( gcp_ignored_name[gcp_ignored_n], name );
++    gcp_ignored_count[gcp_ignored_n++] = 1;
++  }
++}
++
++void gcp_set_offset(double ox, double oy) { gcp_ofs_X = ox; gcp_ofs_Y = oy; }
++void gcp_set_rot180(bool r) { gcp_rot180 = r; }
++
++void gcp_print_ignored()
++{
++  if( !gcp_ignored_n ) return;
++  printf("Skipped commands the UP does not use:");
++  for( unsigned int k=0; k<gcp_ignored_n; k++ )
++    printf(" %s(x%u)", gcp_ignored_name[k], gcp_ignored_count[k]);
++  printf("\n");
++}
+ static unsigned int gcp_layer;
+ 
+ #define gcp_error(e,s) { printf("GCP ERROR at line %d: %s\n>>%s\n",gcp_file_line_number,e,s); }
+@@ -50,6 +87,7 @@ void gcp_reset()
+ 
+   gcp_Z_max_used = 0;
+   gcp_layer = 0;
++  gcp_ignored_n = 0;
+ }
+ 
+ bool gcp_process_line(const char* gcodeline)
+@@ -57,9 +95,11 @@ bool gcp_process_line(const char* gcodeline)
+   if( !gcodeline )
+     return false;
+ 
+-  char _line[256];
+-  strncpy( _line, gcodeline, sizeof(_line) );
++  char _line[1024];
++  strncpy( _line, gcodeline, sizeof(_line)-1 );
++  _line[sizeof(_line)-1] = 0;
+   char *line = _line;
++  while( ' '==*line || '\t'==*line ) line++;
+   char *tok;
+ 
+   gcp_file_line_number++;
+@@ -105,7 +145,8 @@ bool gcp_process_line(const char* gcodeline)
+     *tok=0; //cut line before first comment
+   }
+ 
+-  bool  xp=false,yp=false,zp=false,ep=false,fp=false,tp=false,sp=false,pp=false,rp=false;
++  bool  xp=false,yp=false,zp=false,ep=false,fp=false,tp=false,sp=false,pp=false,rp=false,ib=false,jb=false;
++  double iv=0,jv=0;
+   double xv=0,yv=0,zv=0,ev=0,fv=0,tv=0,sv=0,pv=0,rv=0;
+   bool  xb=false,yb=false,zb=false,eb=false,fb=false,tb=false,sb=false,pb=false,rb=false;
+ 
+@@ -124,6 +165,8 @@ bool gcp_process_line(const char* gcodeline)
+     if('S'==*tok){sp=true;sv=strtod(tok+1,&ref);sb=(ref!=NULL);}
+     if('P'==*tok){pp=true;pv=strtod(tok+1,&ref);pb=(ref!=NULL);}
+     if('R'==*tok){rp=true;rv=strtod(tok+1,&ref);rb=(ref!=NULL);}
++    if('I'==*tok){iv=strtod(tok+1,&ref);ib=(ref!=NULL);}
++    if('J'==*tok){jv=strtod(tok+1,&ref);jb=(ref!=NULL);}
+   }
+   
+   if( 'G'==*line )
+@@ -136,30 +179,97 @@ bool gcp_process_line(const char* gcodeline)
+       case 1: //move
+        {
+         if(fb) gcp_F=fv;
+-        if(eb) gcp_E=(gcp_use_absoulte||gcp_use_extruder_absoulte)?ev:gcp_E+ev;
++        double prevE = gcp_E, prevX = gcp_X, prevY = gcp_Y, prevZ = gcp_Z;
++        if(eb) gcp_E=(gcp_use_extruder_absoulte)?ev:gcp_E+ev;
+         if(xb) gcp_X=(gcp_use_absoulte)?xv:gcp_X+xv;
+         if(yb) gcp_Y=(gcp_use_absoulte)?yv:gcp_Y+yv;
+         if(zb) gcp_Z=(gcp_use_absoulte)?zv:gcp_Z+zv;
+-        if(zb)
++        /* Z moves go to the printer as a direct "jog" move, which skips this converter's
++           acceleration control and speed cap. So only the Z change itself goes that way:
++           - a line that names the Z it is already at (Orca writes z-hop travels as
++             "G1 X.. Y.. Z.5") is an ordinary XY move;
++           - a line that changes Z and XY together is split: going up, lift first and
++             then travel; going down, travel first and then lower. */
++        bool zchange = zb && fabs(gcp_Z - prevZ) > 0.00001;
++        bool xychange = (fabs(gcp_X - prevX) > 0.00001) || (fabs(gcp_Y - prevY) > 0.00001);
++        if(zchange && !xychange)
+         {
+-          umcwriter_move_direct(gcp_X,gcp_Y,gcp_Z,gcp_E,gcp_F);
+-
+-          if( gcp_Z > gcp_Z_max_used )
++          umcwriter_move_direct(OUT_X(gcp_X),OUT_Y(gcp_Y),gcp_Z,gcp_E,gcp_F);
++        }
++        else if(zchange)
++        {
++          if( gcp_Z > prevZ )
++          {
++            umcwriter_move_direct(OUT_X(prevX),OUT_Y(prevY),gcp_Z,prevE,gcp_F);
++            umcwriter_planner_add(OUT_X(gcp_X),OUT_Y(gcp_Y),gcp_E,gcp_F);
++          }
++          else
++          {
++            umcwriter_planner_add(OUT_X(gcp_X),OUT_Y(gcp_Y),gcp_E,gcp_F);
++            umcwriter_move_direct(OUT_X(gcp_X),OUT_Y(gcp_Y),gcp_Z,gcp_E,gcp_F);
++          }
++        }
++        else
++        {
++          /* a new layer starts at the first extruding move at a new height
++             (travel lifts and z-hops don't count) */
++          if( gcp_E > prevE && (xb||yb) && gcp_Z > gcp_Z_max_used + 0.0001 )
+           {
+             gcp_Z_max_used = gcp_Z;
+             gcp_layer++;
++            umcwriter_set_report_data( gcp_layer, gcp_Z );
+           }
+-          umcwriter_set_report_data( gcp_layer, gcp_Z );
++          /* travel (no extrusion, not a wipe): like UP Studio, let the printer's own jog
++             routine do it - it keeps count of its steps at speed. Printing moves go
++             through the planner at UP Studio-like speeds (see umcwriter.c). */
++          double dxy = sqrt((gcp_X-prevX)*(gcp_X-prevX)+(gcp_Y-prevY)*(gcp_Y-prevY));
++          if( gcp_E == prevE && dxy >= 1.0 )
++            umcwriter_move_direct(OUT_X(gcp_X),OUT_Y(gcp_Y),gcp_Z,gcp_E,gcp_F);
++          else
++            umcwriter_planner_add(OUT_X(gcp_X),OUT_Y(gcp_Y),gcp_E,gcp_F);
+         }
+-        else
+-          umcwriter_planner_add(gcp_X,gcp_Y,gcp_E,gcp_F);
+        }
+        break;
+ 
+       case 2:
+-      case 3:
+-        gcp_error("G2/G3 ARC not suppported",gcodeline);
+-        return false;
++      case 3: //arc: split into short straight segments
++       {
++        if(fb) gcp_F=fv;
++        double x0=gcp_X, y0=gcp_Y, z0=gcp_Z, e0=gcp_E;
++        double x1 = xb ? (gcp_use_absoulte?xv:x0+xv) : x0;
++        double y1 = yb ? (gcp_use_absoulte?yv:y0+yv) : y0;
++        double z1 = zb ? (gcp_use_absoulte?zv:z0+zv) : z0;
++        double e1 = eb ? (gcp_use_extruder_absoulte?ev:e0+ev) : e0;
++        double cx, cy;
++        bool cw = ((int)code == 2);
++        if( ib || jb ) { cx = x0+iv; cy = y0+jv; }
++        else if( rb )
++        {
++          double dx=x1-x0, dy=y1-y0, d=sqrt(dx*dx+dy*dy);
++          if( d<1e-9 || fabs(rv)<d/2 ) { gcp_error("Invalid arc radius",gcodeline); return false; }
++          double h = sqrt(rv*rv-(d/2)*(d/2));
++          if( (cw && rv>0) || (!cw && rv<0) ) h = -h;
++          cx = x0+dx/2 - h*dy/d; cy = y0+dy/2 + h*dx/d;
++        }
++        else { gcp_error("Arc without I/J or R",gcodeline); return false; }
++        double r  = sqrt((x0-cx)*(x0-cx)+(y0-cy)*(y0-cy));
++        double a0 = atan2(y0-cy,x0-cx), a1 = atan2(y1-cy,x1-cx);
++        double sweep = a1-a0;
++        if( cw  && sweep >= -1e-9 ) sweep -= 2*M_PI;
++        if( !cw && sweep <=  1e-9 ) sweep += 2*M_PI;
++        int segs = (int)ceil(fabs(sweep)*r/0.5); if(segs<1) segs=1; if(segs>2000) segs=2000;
++        for( int k=1; k<=segs; k++ )
++        {
++          double t = (double)k/segs, a = a0+sweep*t;
++          gcp_X = (k==segs)?x1:cx+r*cos(a);
++          gcp_Y = (k==segs)?y1:cy+r*sin(a);
++          gcp_E = e0+(e1-e0)*t;
++          if( z1 != z0 ) { gcp_Z = z0+(z1-z0)*t; umcwriter_move_direct(OUT_X(gcp_X),OUT_Y(gcp_Y),gcp_Z,gcp_E,gcp_F); }
++          else umcwriter_planner_add(OUT_X(gcp_X),OUT_Y(gcp_Y),gcp_E,gcp_F);
++        }
++        gcp_Z = z1;
++       }
++       break;
+ 
+       case 4: //pause
+         {
+@@ -177,8 +287,9 @@ bool gcp_process_line(const char* gcodeline)
+       case 28: //home
+         {
+           if(!xp && !yp && !zp) {xp=true;yp=true;zp=true;} //if no parameter given home all axis
+-          if(xp){ gcp_X=0; }
+-          if(yp){ gcp_Y=0; }
++          /* G28: the head goes to machine 0, i.e. where OUT_X/OUT_Y give 0 */
++          if(xp){ gcp_X = gcp_rot180 ? gcp_ofs_X : -gcp_ofs_X; }
++          if(yp){ gcp_Y = gcp_rot180 ? gcp_ofs_Y : -gcp_ofs_Y; }
+           if(zp){ gcp_Z=0; }
+           umcwriter_virtual_home(xp?100*60:0,yp?100*60:0,zp?50*60:0);
+         }
+@@ -186,10 +297,12 @@ bool gcp_process_line(const char* gcodeline)
+ 
+       case 90: //set absolute positioning
+         gcp_use_absoulte = true;
++        gcp_use_extruder_absoulte = true;
+         break;
+ 
+       case 91: //set relative positioning
+         gcp_use_absoulte = false;
++        gcp_use_extruder_absoulte = false;
+         break;
+ 
+       case 92: //set position
+@@ -199,7 +312,7 @@ bool gcp_process_line(const char* gcodeline)
+           if(zb) gcp_Z=zv;
+           if(eb) gcp_E=ev;
+           if( xb || yb )
+-            umcwriter_planner_set_position(gcp_X,gcp_Y,gcp_E);
++            umcwriter_planner_set_position(OUT_X(gcp_X),OUT_Y(gcp_Y),gcp_E);
+           else if(eb)
+             umcwriter_planner_set_a_position(gcp_E);
+             
+@@ -207,8 +320,8 @@ bool gcp_process_line(const char* gcodeline)
+         break;
+  
+       default:
+-        gcp_error("UNSUPPORTED command",gcodeline);
+-        return false;
++        gcp_note_ignored(line);
++        break;
+     }
+   }
+   else
+@@ -260,8 +373,8 @@ bool gcp_process_line(const char* gcodeline)
+         break;
+ 
+       default:
+-        gcp_error("UNSUPPORTED command",gcodeline);
+-        return false;
++        gcp_note_ignored(line);
++        break;
+     }
+   }
+   else
+@@ -273,8 +386,7 @@ bool gcp_process_line(const char* gcodeline)
+   }
+   else
+   {
+-    gcp_error("Unknown command",gcodeline);
+-    return false;
++    gcp_note_ignored(line);
+   }
+ 
+   return true;
+diff --git a/UP3DTRANSCODE/gcodeparser.h b/UP3DTRANSCODE/gcodeparser.h
+index 19f3fc4..5f2e072 100644
+--- a/UP3DTRANSCODE/gcodeparser.h
++++ b/UP3DTRANSCODE/gcodeparser.h
+@@ -26,5 +26,8 @@ void   gcp_reset();
+ bool   gcp_process_line(const char* gcodeline);
+ int    gcp_get_layer();
+ double gcp_get_height();
++void   gcp_set_offset(double ox, double oy);
++void   gcp_set_rot180(bool r);
++void   gcp_print_ignored();
+ 
+ #endif //gcodeparser_h
+diff --git a/UP3DTRANSCODE/hoststepper.c b/UP3DTRANSCODE/hoststepper.c
+index f26c975..1f592bb 100644
+--- a/UP3DTRANSCODE/hoststepper.c
++++ b/UP3DTRANSCODE/hoststepper.c
+@@ -208,11 +208,13 @@ void _st_create_up3d_seg_c(segment_up3d_t* pseg, double v)
+   int64_t s_a = g_ea*512 + pl_block->steps[2]*512*((pl_block->direction_bits&get_direction_pin_mask(2))?-1:1);
+   
+   //calc time based on corrected xsteps
+-  double tx = fabs(s_x / (512*settings.steps_per_mm[0]) / v);
+-  double ty = fabs(s_y / (512*settings.steps_per_mm[1]) / v);
+-  double ta = fabs(s_a / (512*settings.steps_per_mm[2]) / v);
+-  
+-  double t = max(max(tx,ty),ta);
++  //(v is the speed along the path: time = path length / v. The original used the longest
++  // single axis, so diagonals ran up to 41% faster than planned and the speed jumped
++  // between the acceleration and cruise parts of a move.)
++  double dx = s_x / (512*settings.steps_per_mm[0]);
++  double dy = s_y / (512*settings.steps_per_mm[1]);
++  double da = s_a / (512*settings.steps_per_mm[2]);
++  double t = sqrt(dx*dx + dy*dy + da*da) / v;
+  
+   //==> tmax = 65535*65535 / 50000000 = 85.8 sec. per segment
+   int64_t p1 = 1+(int64_t)(t*F_CPU)/65535;
+diff --git a/UP3DTRANSCODE/umcwriter.c b/UP3DTRANSCODE/umcwriter.c
+index 8f11f1f..96fcd8e 100644
+--- a/UP3DTRANSCODE/umcwriter.c
++++ b/UP3DTRANSCODE/umcwriter.c
+@@ -26,6 +26,7 @@
+ #include <stdbool.h>
+ #include <stdio.h>
+ #include <math.h>
++#include <stdlib.h>
+ 
+ static FILE*   umcwriter_file;
+ static double  umcwriter_Z;
+@@ -42,8 +43,12 @@ static int _umcwriter_write_file(UP3D_BLK* pblks, uint32_t blks )
+     return 0;
+ }
+ 
++#define UMC_PRINT_MAX 25.0   /* mm/s: UP Studio never drives the head faster while printing */
++static bool umc_classic = false;   /* UP3D_CLASSIC_SEGMENTS=1 in the environment: old behaviour */
++
+ bool umcwriter_init(const char* filename, const double heightZ, const char machine_type)
+ {
++  { const char *e = getenv("UP3D_CLASSIC_SEGMENTS"); umc_classic = (e && *e == '1'); }
+   umcwriter_Z = 0;
+   umcwriter_Z_height = heightZ;
+   umcwriter_print_time = 0;
+@@ -130,6 +135,36 @@ bool umcwriter_init(const char* filename, const double heightZ, const char machi
+   return true;
+ }
+ 
++/* --- raw program writing for printer controls (no homing, no print setup) --- */
++bool umcwriter_open_raw(const char* filename, const char machine_type)
++{
++  umcwriter_Z = 0;
++  umcwriter_Z_height = 0;
++  umcwriter_print_time = 0;
++  umcwriter_machine_type = machine_type;
++  umcwriter_bed_temp = 0;
++  st_reset();
++  plan_reset();
++  umcwriter_file = fopen(filename,"wb+");
++  return umcwriter_file != NULL;
++}
++
++void umcwriter_write_raw(UP3D_BLK* pblks, uint32_t blks)
++{
++  umcwriter_planner_sync();
++  _umcwriter_write_file(pblks, blks);
++}
++
++void umcwriter_close_raw()
++{
++  umcwriter_planner_sync();
++  UP3D_BLK blk;
++  UP3D_PROG_BLK_Stop(&blk);
++  _umcwriter_write_file(&blk, 1);
++  fclose( umcwriter_file );
++  umcwriter_file = NULL;
++}
++
+ void umcwriter_finish(bool power_off)
+ {
+   umcwriter_planner_sync();
+@@ -261,14 +296,19 @@ void umcwriter_virtual_home(double speedX, double speedY, double speedZ)
+   umcwriter_planner_set_position(0,0,0);
+ }
+ 
++#define UMC_Z_MAX 15.0
++#define UMC_TRAVEL_MAX 100.0  /* mm/s, travel moves done by the printer's jog routine */
++
+ void umcwriter_move_direct(double X, double Y, double Z, double A, double F)
+ {
+   umcwriter_planner_sync();
+ 
+-  double feedX = F;
+-  double feedY = F;
+-  double feedZ = F;
+-  double feedA = F;
++  /* direct moves bypass the planner: keep them gentle. X/Y no faster than the
++     converter's speed cap, the bed (Z) no faster than UMC_Z_MAX mm/s */
++  double feedX = min(F, UMC_TRAVEL_MAX*60.0);
++  double feedY = min(F, UMC_TRAVEL_MAX*60.0);
++  double feedZ = min(F, UMC_Z_MAX*60.0);
++  double feedA = min(F, settings.max_rate[2]*60.0);
+ 
+   double pos[3];
+   plan_get_position(pos);
+@@ -276,12 +316,12 @@ void umcwriter_move_direct(double X, double Y, double Z, double A, double F)
+ 
+   double tX = fabs(X+pos[1])/feedX;
+   double tY = fabs(Y-pos[0])/feedY;
+-  double tZ = fabs(umcwriter_Z_height-Z-umcwriter_Z)/feedZ;
++  double tZ = fabs(Z-umcwriter_Z)/feedZ;
+   //double tA = fabs(relA)/feedA;
+ 
+   double t=0;
+   if(tX>t) t=tX; if(tY>t) t=tY; if(tZ>t) t=tZ;
+-  umcwriter_print_time += t;
++  umcwriter_print_time += t*60.0 + 0.2;   /* feeds are mm/min; plus a little for the stop/start */
+ 
+   double topos[2];
+   topos[settings.x_axes] = X * settings.x_dir;
+@@ -315,6 +355,122 @@ void umcwriter_planner_set_a_position(double A)
+   plan_set_e_position(A);
+ }
+ 
++
++/* -----------------------------------------------------------------------------------------
++   Write one motion segment the way UP Studio does.
++
++   UP Studio never sends a motion segment longer than ~500 ticks, uses short ticks
++   (2-5 kHz) and never gives an axis a speed of exactly 0 (an axis that should stay
++   still gets speed 1, which can't add up to a step within 500 ticks). The original UP3D
++   segments are long (up to 65535 ticks of ~1.3 ms) with many steps per tick and 0 for
++   idle axes; on the UP Box this shows up as a slow drift every layer
++   (github.com/MaikStohn/UP3D/issues/31).
++
++   Here each segment is re-cut into chunks of <= UMC_MAX_TICKS short ticks. The step count
++   of every chunk is fixed exactly (same floor() maths as the printer), so each axis still
++   moves exactly the number of steps the converter planned for the whole segment.
++   ----------------------------------------------------------------------------------------- */
++#define UMC_TICK_TARGET 12500   /* cycles per tick at 50 MHz: 4 kHz */
++#define UMC_MAX_TICKS   500     /* < 512, so a speed of 1 never makes a step */
++
++
++static int64_t umc_ceil_div(int64_t a, int64_t b)   /* b > 0 */
++{
++  int64_t q = a / b;
++  if( (a % b) != 0 && a > 0 ) q++;
++  return q;
++}
++
++static int64_t umc_floor_div(int64_t a, int64_t b)  /* b > 0 */
++{
++  int64_t q = a / b;
++  if( (a % b) != 0 && a < 0 ) q--;
++  return q;
++}
++
++/* steps the converter planned for this axis (same expression as hoststepper.c) */
++static int64_t umc_model_steps(int32_t p1, int32_t v, int32_t a)
++{
++  return (int64_t)floor( (float)(v*p1+a*(p1-1)*p1/2) / 512.0 );
++}
++
++static void umc_emit(uint16_t p1, uint16_t p2, const int32_t v[3], const int32_t a[3])
++{
++  UP3D_BLK blk;
++  UP3D_PROG_BLK_MoveL(&blk, p1, p2, (int16_t)v[0], (int16_t)v[1], (int16_t)v[2], (int16_t)a[0], (int16_t)a[1], (int16_t)a[2]);
++  _umcwriter_write_file(&blk, 1);
++}
++
++static void umcwriter_write_movel(const segment_up3d_t *ps)
++{
++  int32_t V[3] = { ps->p3, ps->p4, ps->p5 };
++  int32_t A[3] = { ps->p6, ps->p7, ps->p8 };
++
++  if( umc_classic )
++  {
++    umc_emit(ps->p1, ps->p2, V, A);
++    return;
++  }
++
++  int64_t m = (ps->p2 + UMC_TICK_TARGET - 1) / UMC_TICK_TARGET;   /* split each tick into m */
++  if( m < 1 ) m = 1;
++  int64_t p2n = (ps->p2 + m/2) / m;
++  if( p2n < 801 ) { m = 1; p2n = ps->p2; }
++  int64_t N = (int64_t)ps->p1 * m;                                  /* ticks after the split */
++  int64_t chunks = (N + UMC_MAX_TICKS - 1) / UMC_MAX_TICKS;
++  if( chunks < 1 ) chunks = 1;
++
++  int64_t total[3], done[3] = {0,0,0};
++  int32_t an[3];
++  for( int k = 0; k < 3; k++ )
++  {
++    total[k] = umc_model_steps(ps->p1, V[k], A[k]);
++    double ad = (double)A[k] / (double)(m*m);
++    an[k] = (int32_t)(ad >= 0 ? ad + 0.5 : ad - 0.5);
++  }
++
++  int64_t t0 = 0;
++  for( int64_t c = 0; c < chunks; c++ )
++  {
++    int64_t t1 = (c == chunks-1) ? N : (N * (c+1)) / chunks;
++    int64_t n = t1 - t0;
++    int32_t vv[3], aa[3];
++    for( int k = 0; k < 3; k++ )
++    {
++      /* where this axis should be at the end of the chunk (in steps) */
++      int64_t target;
++      if( c == chunks-1 ) target = total[k];
++      else
++      {
++        double tau = (double)t1 / (double)m;               /* time in original ticks */
++        double s = V[k]*tau + A[k]*tau*(tau-1.0)/2.0;     /* 1/512 steps */
++        target = (int64_t)floor(s / 512.0);
++        /* never overshoot the segment's total in either direction */
++        if( total[k] >= 0 ) { if( target > total[k] ) target = total[k]; if( target < 0 ) target = 0; }
++        else                { if( target < total[k] ) target = total[k]; if( target > 0 ) target = 0; }
++      }
++      int64_t st = target - done[k];
++      int64_t acc = (int64_t)an[k] * n * (n-1) / 2;
++      int64_t v = umc_ceil_div(st*512 - acc, n);
++      /* the printer counts floor((v*n + a*n*(n-1)/2)/512) steps: make it exactly st */
++      while( umc_floor_div(v*n + acc, 512) > st ) v--;
++      while( umc_floor_div(v*n + acc, 512) < st ) v++;
++      if( st == 0 && an[k] == 0 && v == 0 ) v = 1;       /* idle axis: 1, like UP Studio */
++      if( v > 32767 || v < -32767 || an[k] > 32767 || an[k] < -32767 ||
++          llabs(v*n + acc) >= (1LL<<24) )
++      {
++        /* can't express this chunk safely: send the segment unchanged */
++        umc_emit(ps->p1, ps->p2, V, A);
++        return;
++      }
++      vv[k] = (int32_t)v; aa[k] = an[k];
++      done[k] += st;
++    }
++    umc_emit((uint16_t)n, (uint16_t)p2n, vv, aa);
++    t0 = t1;
++  }
++}
++
+ void umcwriter_planner_add(double X, double Y, double A, double F)
+ {
+   while( plan_check_full_buffer() )
+@@ -322,9 +478,8 @@ void umcwriter_planner_add(double X, double Y, double A, double F)
+     segment_up3d_t *pseg;
+     if( !st_get_next_segment_up3d(&pseg) )
+       break;
+-    UP3D_BLK blk;
+-    UP3D_PROG_BLK_MoveL(&blk,pseg->p1,pseg->p2,pseg->p3,pseg->p4,pseg->p5,pseg->p6,pseg->p7,pseg->p8);
+-    _umcwriter_write_file(&blk, 1);
++    umcwriter_print_time += ((double)pseg->p2*(double)pseg->p1)/F_CPU;
++    umcwriter_write_movel(pseg);
+   }
+ 
+   double pos[3];
+@@ -332,6 +487,7 @@ void umcwriter_planner_add(double X, double Y, double A, double F)
+   pos[settings.y_axes] = Y * settings.y_dir;
+   pos[2] = A;
+   double feed = F/60;
++  if( !umc_classic && feed > UMC_PRINT_MAX ) feed = UMC_PRINT_MAX;   /* UP Studio never prints faster */
+   plan_buffer_line( pos, feed, false);
+ }
+ 
+@@ -344,9 +500,7 @@ void umcwriter_planner_sync()
+     {
+       umcwriter_print_time += ((double)pseg->p2*(double)pseg->p1)/F_CPU;
+ 
+-      UP3D_BLK blk;
+-      UP3D_PROG_BLK_MoveL(&blk,pseg->p1,pseg->p2,pseg->p3,pseg->p4,pseg->p5,pseg->p6,pseg->p7,pseg->p8);
+-      _umcwriter_write_file(&blk, 1);
++      umcwriter_write_movel(pseg);
+     }
+     
+     if( 0 == plan_get_block_buffer_count() )
+@@ -409,7 +563,9 @@ void umcwriter_set_bed_temp(int32_t temp, bool wait)
+ 
+   UP3D_PROG_BLK_SetParameter(&blk,PARA_BED_TEMP,temp);
+   _umcwriter_write_file(&blk, 1);
+-  UP3D_PROG_BLK_SetParameter(&blk,PARA_HEATER_BED_ON,(temp)?1:0);
++  /* on the Box+ this is a countdown in 2 s units, not an on/off flag:
++     keep the bed on for up to 24 h; the end G-code (M140 S0) switches it off */
++  UP3D_PROG_BLK_SetParameter(&blk,PARA_HEATER_BED_ON,(temp)?43200:0);
+   _umcwriter_write_file(&blk, 1);
+ 
+   if(wait && (temp>umcwriter_bed_temp) ) //only wait if new temperature is higher
+diff --git a/UP3DTRANSCODE/umcwriter.h b/UP3DTRANSCODE/umcwriter.h
+index fc5e702..de8a99c 100644
+--- a/UP3DTRANSCODE/umcwriter.h
++++ b/UP3DTRANSCODE/umcwriter.h
+@@ -21,9 +21,13 @@
+ 
+ #include <stdint.h>
+ #include <stdbool.h>
++#include "up3ddata.h"
+ 
+ bool    umcwriter_init(const char* filename, const double heightZ, const char machine_type);
+ void    umcwriter_finish(bool power_off);
++bool    umcwriter_open_raw(const char* filename, const char machine_type);
++void    umcwriter_write_raw(UP3D_BLK* pblks, uint32_t blks);
++void    umcwriter_close_raw();
+ int32_t umcwriter_get_print_time();
+ void    umcwriter_home(int32_t axes);
+ void    umcwriter_virtual_home(double speedX, double speedY,double speedZ);
+diff --git a/UP3DTRANSCODE/up3dtranscode.c b/UP3DTRANSCODE/up3dtranscode.c
+index 9fd544e..660d028 100644
+--- a/UP3DTRANSCODE/up3dtranscode.c
++++ b/UP3DTRANSCODE/up3dtranscode.c
+@@ -30,22 +30,24 @@
+ 
+ void print_usage_and_exit()
+ {
+-  printf("Usage: up3dtranscode machinetype input.gcode output.umc nozzleheight [a_factor%%] [vmax_factor%%] [junction]\n\n");
++  printf("Usage: up3dtranscode machinetype input.gcode output.umc nozzleheight [a_factor%%] [vmax_factor%%] [junction] [offset_x] [offset_y] [rot180]\n\n");
+   printf("          machinetype:  mini / classic / plus / box / Cetus\n");
+   printf("          input.gcode:  g-code file from slic3r/cura/simplify\n");
+   printf("          output.umc:   up machine code file which will be generated\n");
+   printf("          nozzleheight: nozzle distance from bed (e.g. 123.45)\n");
+   printf("          a_factor%%:    acceleration factor to defaults (.e.g. 0.5)\n");
+   printf("          vmax_factor%%: speed factor to max defaults (e.g. 1.5)\n");
+-  printf("          junction:     junction deviation, default is 0.05 (e.g. 0.1)\n\n");
+-  exit(0);
++  printf("          junction:     junction deviation, default is 0.05 (e.g. 0.1)\n");
++  printf("          offset_x/y:   added to every X/Y (slicer origin -> printer origin), mm\n");
++  printf("          rot180:       turn the part 180 degrees about the bed centre\n\n");
++  exit(2);
+ }
+ 
+ int main(int argc, char *argv[])
+ {
+   bool power_off = true;
+   
+-  if( 5 > argc ||  8 < argc )
++  if( 5 > argc || 11 < argc )
+     print_usage_and_exit();
+ 
+   switch( argv[1][0] )
+@@ -115,6 +117,21 @@ int main(int argc, char *argv[])
+     //printf(";use junction %.5f\n", junction);
+   }
+   
++  double ofs_x = 0, ofs_y = 0;
++  if( 10 <= argc )
++  {
++    if( 1 != sscanf(argv[8],"%lf",&ofs_x) || 1 != sscanf(argv[9],"%lf",&ofs_y) )
++    {
++      printf("ERROR: Invalid offset: %s %s\n\n", argv[8], argv[9]);
++      print_usage_and_exit();
++    }
++  }
++  else if( 9 == argc )
++  {
++    printf("ERROR: offset_x needs offset_y\n\n");
++    print_usage_and_exit();
++  }
++
+   double nozzle_height;
+   if( 1 != sscanf(argv[4],"%lf", &nozzle_height) )
+   {
+@@ -136,11 +153,17 @@ int main(int argc, char *argv[])
+   }
+ 
+   gcp_reset();
++  gcp_set_offset( ofs_x, ofs_y );
++  gcp_set_rot180( 11 == argc && !strcmp(argv[10], "rot180") );
+ 
+   char line[1024];
+   while( fgets(line,sizeof(line),fgcode) )
+     if( !gcp_process_line(line) )
+-      return 0;
++    {
++      fclose( fgcode );
++      printf("ERROR: conversion stopped, see message above\n");
++      return 1;
++    }
+ 
+   umcwriter_finish(power_off);
+   int32_t print_time = umcwriter_get_print_time();
+@@ -152,6 +175,7 @@ int main(int argc, char *argv[])
+   int m = print_time/60; printf("%02dm:",m); print_time -= m*60;
+   printf("%02ds",print_time);
+   printf(" / Nozzle Height: %.2fmm\n", nozzle_height);
++  gcp_print_ignored();
+ 
+   return 0;
+ }

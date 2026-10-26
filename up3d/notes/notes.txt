@@ -1,0 +1,203 @@
+CMD2  0/0 = ALL OFF
+CMD2  0/1 = ALL ON
+CMD2  4/0 = BEEP OFF
+CMD2  4/1 = BEEP ON
+
+CMD5  PAUSE
+
+CMD6  32/0 = ?
+CMD6  32/1 = ?
+
+CMD7 WAIT-IF-NOT : PARAM (P1) "operation(P3)" VALUE(P2) 
+  P1: 12
+  P3: '='
+  P2: 1
+
+CMD8 HOME AXIS (0=X,1=Y,2=Z)
+
+CMD9  IF-NOT-THEN-JUMP-PROGRAM : PARAM (P1) "operation(P3)" VALUE(P2) RELATIVE-POSITION(P4)
+  P1: C9
+  P3: '<'
+  P2: 1
+  P4: -6 (0xFFFFFFFA) [includes own instruction]
+  
+CMDB: ADD TO PARAM : PARAM (P1) += VALUE(P2)
+  P1: C9
+  P2: -1 (0xFFFFFFFF)
+
+
+PARAM0x22: ENDSTOP Y
+PARAM0x24: ENDSTOP Z
+PARAM0x27: ENDSTOP X
+
+
+   (0<=PROGID<=9)
+6C *PROGID* 01 start write
+6C *PROGID* 00 stop write *** select
+
+
+//ROMPROGS:
+
+PROG00: INITIALIZE
+
+PROG01: GO INIT POS X/Y
+
+PROG02: BEFORE PRINT (BEEP, HEAT, BEEP, WAIT, BEEP)
+
+PROG03: MOVE TO CENTER 10 OVER BED
+
+PROG04: MOVE TO CENTER 10 OVER BED AND BEEP
+
+PROG05: FINALIZE
+PROG06: FINALIZE AND TURN OFF
+
+PROG07: EXTRUDE FILAMENT (14=1, HEAT, BEEP, 17=1, GOTO 0, 17=2, EXTRUDE SLOW, RETRACT FAST, 17=1, EXTRUDE SLOW, 14=0, BEEP )
+
+PROG08: EXTRUDE FILAMENT P17=1 (HEAT, BEEP, RETRACT FAST, EXTRUDE SLOW, BEEP)
+PROG09: EXTRUDE FILAMENT P17=2 (HEAT, BEEP, RETRACT FAST, EXTRUDE SLOW, BEEP)
+
+PROG10: REMOVE FILAMENT P17=1 (BEEP, HEAT, RETRACT-SLOW, RETRACT-FAST, BEEP)
+PROG11: REMOVE FILAMENT P17=2 (BEEP, HEAT, RETRACT-SLOW, RETRACT-FAST, BEEP)
+
+PROG12: RETRACT+EXTRUDE P17=1 (RETRACT FAST, EXTRUDE SLOW, EXTRUDE FAST)
+PROG13: RETRACT+EXTRUDE P17=2 (RETRACT FAST, EXTRUDE SLOW, EXTRUDE FAST)
+
+
+
+04000000 LONG MOVE
+
+(63_4c_58)
+
+CMD3: XSPEED,XPOS,YSPEED,YPOS
+CMD3: Z-SPEED, Z-POS, E-SPEED, E-POS
+
+4C '0'+... ==> int
+
+
+58 Execute
+
+
+22 write SD CARD
+23 read SD CARD (?,len,?)
+
+23 ?(BYTE) LEN(<=60)
+
+*TESTER*
+
+6C 09 01
+56 10 13 00 00 00
+4C '0'+2
+2F 01 02000000 0a000000 02000000 ******** ********
+
+76 10 10 ==> 10 = TEST SD CARD OK
+
+76 2A ==> /1000  : 5000 / 1000 = 5.0 
+76 2B ==> *0.001 : 193 * 0.001 = 0.193
+76 36 ==> *0.001 : 103 * 0.001 = 0.103
+76 3E ==> *0.01  : 306 * 0.01 = 3.06
+****
+
+X,Y,Z,NOZZEL
+
+
+Get POSITION:
+20 ==> ('0'+axis) ==> X,Y,Z,NOZZLE
+
+23 0A 10 ==> GetNozzleHeight SD Card : 123456.0 | height
+
+2B send 8 random bytes
+
+
+46 get free blocks
+*****
+
+
+Err Code: 022; Can't read data from SD card\n  Err Code: 021; Can't save data to SD card\n    Err Code: 013; The platform overheat\n         Err Code: 012; The extruder is not hot enough\nErr Code: 011; The extruder overheat\n         Err Code: 007; Z negative limit error\n        Err Code: 006; Z positive limit error\n        Err Code: 005; Y negative limit error\n        Err Code: 004; Y positive limit error\n        Err Code: 003; X negative limit error\n        Err Code: 002; X positive limit error\n        Err Code: 001; can't extrude\n                 
+
+
+*****
+
+
+
+
+01 00 ? ==> 4A 01 00 00   06
+(GET FW VERSION: 330 / 334 / ...)
+
+52 00 * ==> 07 .... 06
+
+76 2A 2A ? ==> 88 13 00 00    06
+
+76 2B 2B ? ==> C1 00 00 00    06
+
+76 36 36 ? ==> 67 00 00 00    06
+
+76 3E 3E ? ==> 4A 01 00 00    06
+
+
+CMD SUB LEN
+23 0C 20 ? ==> 00 00 00 00 40 24 FE 40 66 66 66 66 66 66 E6 3F A1 BA 79 D4 BA 24 C4 3F A1 BA 79 D4 BA 24 C4 3F     06
+
+23 0F 1C ? ==> 00 20 F1 47 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00       06
+
+23 0A 10 ? ==> 00 00 00 00 00 24 FE 40 9A 99 99 99 99 B9 5E 40        06
+
+23 10 28 ? ==> 00 20 F1 47 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00      06
+
+23 0B 30 ? ==> 00 00 00 00 00 24 FE 40 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00     06
+
+23 0E 20 ? ==> 00 00 00 00 00 24 FE 40 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00     06
+
+
+
+76 10 10 ? ==> 01 00 00 00   06
+
+
+56 39 0E 01 00 00 ? ==> 06
+
+56 3B 69 00 00 00 ? ==> 06
+
+
+56 94 63 00 00 00 ? ==> 06
+
+
+76 06 06 ? ==> 40 96 C2 41  06
+
+76 07 07 ? ==> 82 F2 71 43  06
+
+76 08 08 ? ==> 33 B3 71 42  06
+
+...
+
+76 0A 0A ? ==> 00 00 00 00  06
+
+
+
+56 94 00 00 00 00 ? ==> 06
+
+
+
+58 ==> Exe Count: 0  06
+
+
+63 ? ==> 06
+
+4C 30 ? 01 00 00 00   06     (L0)
+
+
+***********************************************
+pcGetPrinterInfo: F0F0 0x1001 len 18 ...
+pcGetPrinterConnect: F0F0 ??0x200C??? len 76 (packhostinfo +...)
+
+pcCheckDevice: F0F0 0x2001 len 4 DWORD
+pcGetC3kVer: F0F0 0x2003 len 2 WORD
+pcGetDevInfo: F0F0 0x2004 len 24 DATA
+pcGetIPConfig: F0F0 0x2005 len 24 DATA (4*6)
+pcGetLanEvaluate: F0F0 0x2006 len 44 DATA (4+40)
+pcSendFileHeader: F0F0 0x200B len 56 DATA (4+4+4+4+4+2+32)
+pcSendServerAddr: F0F0 0x200C len 76 DATA (PackHostInfo)
+
+TCP?: KeepLive F0F0 0x200D len:0
+
+devEchoInfo: F0F0 0x4001 len 128 ...
+devEchoMessage: F0F0 0x4002 len 2 ...
+

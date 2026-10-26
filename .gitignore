@@ -1,0 +1,10 @@
+# build output
+out/
+*.exe
+*.umc
+# runtime files created next to the app
+settings.json
+jobs/
+error.log
+*.pcap
+__pycache__/
