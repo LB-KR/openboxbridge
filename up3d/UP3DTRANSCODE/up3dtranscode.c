@@ -31,7 +31,7 @@
 void print_usage_and_exit()
 {
   printf("Usage: up3dtranscode machinetype input.gcode output.umc nozzleheight [a_factor%%] [vmax_factor%%] [junction] [offset_x] [offset_y] [rot180]\n\n");
-  printf("          machinetype:  mini / classic / plus / box / Cetus\n");
+  printf("          machinetype:  mini / classic / plus / box / up300 / Cetus\n");
   printf("          input.gcode:  g-code file from slic3r/cura/simplify\n");
   printf("          output.umc:   up machine code file which will be generated\n");
   printf("          nozzleheight: nozzle distance from bed (e.g. 123.45)\n");
@@ -64,6 +64,9 @@ int main(int argc, char *argv[])
     case 'b': //box
       memcpy( &settings, &settings_box, sizeof(settings) );
       break;
+    case 'u': //up300 (experimental)
+      memcpy( &settings, &settings_up300, sizeof(settings) );
+      break;
       
     case 'C': //cetus  
       memcpy( &settings, &settings_cetus, sizeof(settings) );
@@ -73,6 +76,10 @@ int main(int argc, char *argv[])
     default:
       printf("ERROR: Uknown machine type: %s\n\n",argv[1] );
       print_usage_and_exit();
+  }
+  { /* extruder steps/mm override (set by the app after an extrude calibration) */
+    const char *e = getenv("UP3D_ESTEPS");
+    if( e && atof(e) > 1.0 ) settings.steps_per_mm[2] = atof(e);
   }
   
   if (6 <= argc)

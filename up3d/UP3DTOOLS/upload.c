@@ -1,6 +1,8 @@
 //////////////////
 //Author: M.Stohn/
 //////////////////
+// Changed for OpenBoxBridge: the storing itself is UP3D_SendProgramSD (up3d.c), with a
+// choice of method and an automatic second attempt; reports the printer model.
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -12,134 +14,96 @@
 #include <sys/time.h>
 
 #include "up3d.h"
+#include "up3dcomm.h"
 #include "compat.h"
 
 #define upl_error(s) { printf("ERROR: %s\n",s); }
 
+static struct timeval tval_start;
+
+static void progress(uint32_t sent, uint32_t total)
+{
+  struct timeval now, diff;
+  gettimeofday(&now, NULL);
+  timersub(&now, &tval_start, &diff);
+  int64_t usecs = (int64_t)diff.tv_sec*1000000+(int64_t)diff.tv_usec;
+  if( usecs < 1 ) usecs = 1;
+  double kb = sent * 20.0 / 1024.0;
+  printf("UPload: %.2f kB sent (%u%%) [%.2f kB/sec]\r", kb, total ? (unsigned)((uint64_t)sent*100/total) : 100, kb*1000000.0/usecs);
+  fflush(stdout);
+}
+
 int main(int argc, char const *argv[])
 {
-  if( argc != 2 )
+  const char *file = NULL;
+  int method = -1;   /* -1 = automatic: UP3D's way, then UP Studio's if the printer doesn't confirm */
+  for( int i = 1; i < argc; i++ )
   {
-    printf("Usage: %s program.umc\n\n", argv[0]);
+    if( !strncmp(argv[i], "--method=", 9) ) method = atoi(argv[i] + 9);
+    else file = argv[i];
+  }
+  if( !file )
+  {
+    printf("Usage: %s program.umc [--method=0|1|2]\n\n", argv[0]);
+    printf("  --method=0  UP3D's way of storing the job (SD slot 5, block counter check)\n");
+    printf("  --method=1  UP Studio's way (program buffer committed to slot 9)\n");
+    printf("  --method=2  stream it while it prints (USB must stay connected until the end)\n");
+    printf("  default     method 0, then method 1 if the printer doesn't confirm the job\n");
     return 0;
   }
 
-  FILE* fdat = fopen( argv[1], "rb" );
+  FILE* fdat = fopen( file, "rb" );
   if( !fdat )
     return 1;
+  fseek(fdat, 0, SEEK_END);
+  long flen = ftell(fdat);
+  fseek(fdat, 0, SEEK_SET);
+  uint32_t n = (uint32_t)(flen / (long)sizeof(UP3D_BLK));
+  UP3D_BLK *blks = (UP3D_BLK*)malloc( sizeof(UP3D_BLK) * (n ? n : 1) );
+  if( !blks || fread( blks, sizeof(UP3D_BLK), n, fdat ) != n ) { fclose(fdat); upl_error("cannot read the job file"); return 1; }
+  fclose( fdat );
 
   if( !UP3D_Open() )
     return 2;
 
   if( !UP3D_IsPrinterResponsive() )
   {
-    upl_error( "UP printer is not responding\n" );
+    upl_error( "UP printer is not responding" );
     UP3D_Close();
     return 3;
   }
-  
-  UP3D_SetParameter(PARA_RED_BLUE_BLINK,10);
 
-  UP3D_SetParameter(PARA_PRINT_STATUS,0x13); //write to SD
+  uint32_t model = UP3D_GetPrinterModelId();
+  printf("Printer model id %04X (USB product %04X)%s\n", model, UP3DCOMM_GetPID(), model == 0x2783 ? " - UP300 (experimental)" : "");
+  printf("Job: %u blocks\n", n);
+  fflush(stdout);
 
-  if( !UP3D_ClearProgramBuf() )
-  {
-    upl_error( "ClearProgramBuf failed\n" );
-    UP3D_Close();
-    return 4;
-  }
-    
-  uint8_t program_id = 5;
-
-//  UP3D_SetPrintJobInfo( program_id, 0, 1 );
-
-  if( !UP3D_UseSDProgramBuf( program_id, true ) )
-  {
-    upl_error( "UseSDProgramBuf failed\n" );
-    UP3D_Close();
-    return 5;
-  }
-
-  int64_t fpos = 0;
-  fseek(fdat, 0, SEEK_END);
-  int64_t flen = ftell(fdat);
-  fseek(fdat, 0, SEEK_SET);
-
-  struct timeval tval_start, tval_now, tval_diff;
   gettimeofday(&tval_start, NULL);
-  int64_t usecs = 1;
-
-  uint32_t tblocks = 0;
-  for(;;)
-  {
-    UP3D_BLK blocks[72];
-    int nblocks = fread( blocks, sizeof(UP3D_BLK), 72, fdat );
-    if( nblocks<=0 )
-      break;
-
-    if( !UP3D_WriteBlocks( blocks, nblocks ) )
-    {
-      upl_error("Write to SD failed");
-      UP3D_Close();
-      return 6;
-    }
-
-    tblocks += nblocks;
-
-    fpos = ftell(fdat);
-    gettimeofday(&tval_now, NULL);
-    timersub(&tval_now, &tval_start, &tval_diff);
-    usecs = (int64_t)tval_diff.tv_sec*1000000+(int64_t)tval_diff.tv_usec;
-
-    printf("UPload: %.2f kB sent (%"PRIi64"%%) [%.2f kB/sec]\r",fpos/1024.0,fpos*100/flen, fpos*(1000000/1024.0)/usecs);
-    fflush(stdout);
-  }
+  int r = (method == 2) ? UP3D_StreamProgram( blks, n, progress )
+                        : UP3D_SendProgramSD( blks, n, method < 0 ? 0 : method, progress );
   printf("\n");
-
-  fclose( fdat );
-
-  uint32_t w;
-  for( w=0; w<100; w++ )
+  if( r == 7 && method < 0 )
   {
-    if( UP3D_GetParameter(0xC6) == tblocks )
-      break;
-    usleep(50*1000); //wait a bit to let printer time to complete write to SD card
+    printf("The printer did not confirm the job. Trying UP Studio's way of storing it...\n");
+    fflush(stdout);
+    gettimeofday(&tval_start, NULL);
+    r = UP3D_SendProgramSD( blks, n, 1, progress );
+    printf("\n");
+    if( r == 0 ) printf("Stored with method 1 (UP Studio's way).\n");
   }
-  
-  if( UP3D_GetParameter(0xC6) != tblocks )
+  free( blks );
+
+  switch( r )
   {
-    upl_error("Write to SD not finished");
-    UP3D_Close();
-    return 7;
+    case 0: break;
+    case 4: upl_error("ClearProgramBuf failed"); break;
+    case 5: upl_error("UseSDProgramBuf failed"); break;
+    case 6: upl_error("Write to SD failed"); break;
+    case 7: upl_error("Write to SD not finished"); break;
+    case 8: upl_error("Selecting the stored job failed"); break;
+    case 9: upl_error("StartResumeProgram failed"); break;
+    default: upl_error("sending failed"); break;
   }
-  
-  UP3D_SetParameter(PARA_RED_BLUE_BLINK,0);
-
-  UP3D_SetParameter(PARA_PRINT_STATUS,0x1); //System ready
-
-//  UP3D_SetPrintJobInfo( program_id, 0, 0 );
-
-  if( !UP3D_ClearProgramBuf() )
-  {
-    upl_error( "ClearProgramBuf failed\n" );
-    UP3D_Close();
-    return 8;
-  }
-  
-  if( !UP3D_UseSDProgramBuf( program_id, false ) )
-  {
-    upl_error( "UseSDProgramBuf failed\n" );
-    UP3D_Close();
-    return 8;
-  }
-
-  if( !UP3D_StartResumeProgram() )
-  {
-    upl_error( "StartResumeProgram failed\n" );
-    UP3D_Close();
-    return 9;
-  }
-
   UP3D_Close();
-  return 0;
+  return r;
 }

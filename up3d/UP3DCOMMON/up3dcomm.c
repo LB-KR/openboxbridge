@@ -19,11 +19,46 @@
 #define PID_MINI_M (0x2777)
 #define PID_PLUS   (0x277d)
 #define PID_CETUS_S7 (0x277f)
-#define EP_OUT 1
-#define EP_IN  1
+#define PID_UP300  (0x2790)
+
+/* Bulk endpoints. The UP Mini / Plus / Box use OUT 0x01 + IN 0x81; the UP300 uses
+   OUT 0x02 + IN 0x81. They are read from the device's own descriptor after opening. */
+static uint8_t _ep_out = 0x01;
+static uint8_t _ep_in  = 0x81;
+static uint16_t _pid   = 0;
+
+/* Everything the printer sends is collected here and handed out in the sizes the
+   callers ask for. A high-speed printer (UP300) answers in one big transfer where the
+   older ones answer in several small ones; this makes both look the same. */
+static uint8_t _rx[16384];
+static int _rx_len = 0, _rx_pos = 0;
 
 static libusb_context* _libusb_ctx              = NULL;
 static libusb_device_handle* _libusb_dev_handle = NULL;
+
+static void _find_endpoints(void)
+{
+  struct libusb_config_descriptor *cfg = NULL;
+  libusb_device *dev = libusb_get_device( _libusb_dev_handle );
+  struct libusb_device_descriptor dd;
+  if( 0 == libusb_get_device_descriptor( dev, &dd ) ) _pid = dd.idProduct;
+  if( 0 != libusb_get_active_config_descriptor( dev, &cfg ) || !cfg ) return;
+  if( cfg->bNumInterfaces > 0 && cfg->interface[0].num_altsetting > 0 )
+  {
+    const struct libusb_interface_descriptor *id = &cfg->interface[0].altsetting[0];
+    int fo = 0, fi = 0;
+    for( int e = 0; e < id->bNumEndpoints; e++ )
+    {
+      const struct libusb_endpoint_descriptor *ed = &id->endpoint[e];
+      if( (ed->bmAttributes & 3) != LIBUSB_TRANSFER_TYPE_BULK ) continue;
+      if( (ed->bEndpointAddress & LIBUSB_ENDPOINT_IN) ) { if( !fi ) { _ep_in = ed->bEndpointAddress; fi = 1; } }
+      else if( !fo ) { _ep_out = ed->bEndpointAddress; fo = 1; }
+    }
+  }
+  libusb_free_config_descriptor( cfg );
+}
+
+uint16_t UP3DCOMM_GetPID(void) { return _pid; }
 
 #ifdef _DEBUG_IN_OUT_
 static void _print_buffer( const uint8_t* data, const size_t datalen )
@@ -106,12 +141,14 @@ bool UP3DCOMM_Open()
     return false;
   }
 
+  _find_endpoints();
+  _rx_len = _rx_pos = 0;
+
   //clean all outstanding printer responses (left from previous sessions)
   for( ;; )
   {
     int read;
-    uint8_t buf[2048];
-    if( (0 != libusb_bulk_transfer( _libusb_dev_handle, (EP_IN | LIBUSB_ENDPOINT_IN), buf, sizeof(buf), &read, 10)) || (!read) )
+    if( (0 != libusb_bulk_transfer( _libusb_dev_handle, _ep_in, _rx, sizeof(_rx), &read, 10)) || (!read) )
       break;
   }
 
@@ -133,8 +170,17 @@ void UP3DCOMM_Close()
 int UP3DCOMM_ReadTO( const uint8_t *data, const size_t maxdatalen, const int timeout )
 {
   int read;
-  if( 0 != libusb_bulk_transfer( _libusb_dev_handle, (EP_IN | LIBUSB_ENDPOINT_IN), (uint8_t*)data, maxdatalen, &read, timeout) )
-    return -1;
+  if( _rx_pos >= _rx_len )
+  {
+    _rx_len = _rx_pos = 0;
+    if( 0 != libusb_bulk_transfer( _libusb_dev_handle, _ep_in, _rx, sizeof(_rx), &read, timeout) )
+      return -1;
+    _rx_len = read;
+  }
+  read = _rx_len - _rx_pos;
+  if( read > (int)maxdatalen ) read = (int)maxdatalen;
+  memcpy( (uint8_t*)data, _rx + _rx_pos, read );
+  _rx_pos += read;
 
 #ifdef _DEBUG_IN_OUT_
   fprintf(stderr,"<"); _print_buffer( data, read );
@@ -155,7 +201,8 @@ int UP3DCOMM_Write( const uint8_t *data, const size_t datalen )
 #endif
 
   int written;
-  if( 0 != libusb_bulk_transfer( _libusb_dev_handle, (EP_OUT | LIBUSB_ENDPOINT_OUT), (uint8_t*)data, datalen, &written, 500) )
+  _rx_len = _rx_pos = 0;   /* anything not read yet belongs to an earlier command */
+  if( 0 != libusb_bulk_transfer( _libusb_dev_handle, _ep_out, (uint8_t*)data, datalen, &written, 500) )
     return -1;
 
   return written;

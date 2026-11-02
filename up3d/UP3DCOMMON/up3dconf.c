@@ -56,6 +56,22 @@ settings_t settings_box = {
   .heatbed_wait_factor = 30.0,
 };
 
+/* UP300 (experimental): same controller and bed frame as the UP Box+, but its motors count
+   a quarter of the steps (printer info: X/Y 161, Z 805 against the UP Box+'s 644 / 3220).
+   The extruder value is the UP Box+'s 854 scaled the same way (printer info reports 10 vs 40);
+   check it with the extrude test. */
+settings_t settings_up300 = { 
+  .steps_per_mm = { 161.0, 161.0, 213.5 },
+  .max_rate = { 100, 100, 50 },
+  .acceleration = { 1500, 1500, 1500 },
+  .junction_deviation = 0.1,
+  .x_axes =  1, .y_axes =  0,
+  .x_dir  = -1, .y_dir  =  1, .z_dir  = -1,
+  .x_hspeed_hi = 50.0, .y_hspeed_hi = 30.0, .z_hspeed_hi = 30.0, .x_hofs_hi =  4.0, .y_hofs_hi =  4.0, .z_hofs_hi =  6.0,
+  .x_hspeed_lo = 10.0, .y_hspeed_lo = 10.0, .z_hspeed_lo =  3.0, .x_hofs_lo =  2.0, .y_hofs_lo =  2.0, .z_hofs_lo =  2.0,
+  .heatbed_wait_factor = 30.0,
+};
+
 // experimental settings for the Cetus3D
 // the steps_per_mm for the extruder has been measured on a prototype
 settings_t settings_cetus = { 

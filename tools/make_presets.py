@@ -37,7 +37,9 @@ def bambu(d):
         if isinstance(v, str) and (k, v) in MAP_VAL_B: v = MAP_VAL_B[(k, v)]
         o[k] = v
     if d.get('only_one_wall_top') == '1': o['top_one_wall_type'] = 'all top'
-    if d['type'] == 'machine': o['thumbnail_size'] = ['300x300']
+    if d['type'] == 'machine':
+        o['thumbnail_size'] = ['300x300']
+        o['z_hop'] = ['0']   # Bambu has no "lift on top surfaces only"; a lift on every retraction marks the seam
     o['version'] = '1.9.0.0'
     # check enums
     for k, v in o.items():
@@ -67,6 +69,7 @@ start = start.replace('bed_temperature_initial_layer_single', 'first_layer_bed_t
 start = start.replace('[nozzle_temperature_initial_layer]', '[first_layer_temperature[0]]')
 start = '; total layers = [total_layer_count]\n' + start
 end = m['machine_end_gcode'].replace('printable_height', 'max_print_height')
+p_min_travel = m['retraction_minimum_travel'][0]
 printer = {
     'printer_technology': 'FFF',
     'printer_notes': 'UP Box+ over USB via UP Box Print. 0,0 is the middle of the bed.',
@@ -84,9 +87,10 @@ printer = {
     'machine_min_extruding_rate': '0,0', 'machine_min_travel_rate': '0,0',
     'nozzle_diameter': '0.4', 'min_layer_height': '0.1', 'max_layer_height': '0.3',
     'extruder_colour': '"#FCE94F"', 'extruder_offset': '0x0',
-    'retract_length': '0.8', 'retract_speed': '25', 'deretract_speed': '20', 'retract_lift': '0.2',
-    'retract_before_travel': '2', 'retract_layer_change': '1', 'retract_restart_extra': '0',
-    'retract_before_wipe': '0%', 'wipe': '0', 'retract_length_toolchange': '1',
+    'retract_length': '0.8', 'retract_speed': '25', 'deretract_speed': '20',
+    'retract_lift': '0',   # PrusaSlicer has no "lift on top surfaces only"; a lift on every retraction marks the seam
+    'retract_before_travel': p_min_travel, 'retract_layer_change': '1', 'retract_restart_extra': '0',
+    'retract_before_wipe': '70%', 'wipe': '1', 'retract_length_toolchange': '1',   # wipe hides the seam
     'travel_ramping_lift': '0', 'travel_slope': '0', 'travel_lift_before_obstacle': '0',   # plain vertical lift only
     'use_relative_e_distances': '1', 'use_firmware_retraction': '0', 'use_volumetric_e': '0',
     'single_extruder_multi_material': '0',
@@ -110,10 +114,10 @@ def prusa_print(p):
         'layer_height': p['layer_height'], 'first_layer_height': p['initial_layer_print_height'],
         'perimeters': p['wall_loops'], 'top_solid_layers': p['top_shell_layers'], 'bottom_solid_layers': p['bottom_shell_layers'],
         'top_solid_min_thickness': p['top_shell_thickness'], 'bottom_solid_min_thickness': p['bottom_shell_thickness'],
-        'perimeter_generator': 'arachne', 'external_perimeters_first': '0',
+        'perimeter_generator': p['wall_generator'], 'external_perimeters_first': '0',
         'wall_transition_angle': p['wall_transition_angle'], 'min_bead_width': p['min_bead_width'], 'min_feature_size': p['min_feature_size'],
         'top_one_perimeter_type': 'top', 'only_one_perimeter_first_layer': '0',
-        'seam_position': 'rear', 'staggered_inner_seams': '1',
+        'seam_position': 'rear', 'staggered_inner_seams': '1', 'seam_gap_distance': p['seam_gap'],
         'ensure_vertical_shell_thickness': 'enabled', 'extra_perimeters': '0', 'extra_perimeters_on_overhangs': '0',
         'thin_walls': '0', 'gap_fill_enabled': '1', 'gap_fill_speed': p['gap_infill_speed'],
         'fill_density': p['sparse_infill_density'], 'fill_pattern': 'rectilinear', 'fill_angle': p['infill_direction'],

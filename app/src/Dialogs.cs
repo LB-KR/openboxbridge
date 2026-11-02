@@ -85,7 +85,7 @@ namespace OpenBoxBridge
             if (tools.BusyUser) return;
             nx.Value = Math.Max(nx.Minimum, Math.Min(nx.Maximum, nx.Value + (decimal)dx));
             ny.Value = Math.Max(ny.Minimum, Math.Min(ny.Maximum, ny.Value + (decimal)dy));
-            var args = new System.Collections.Generic.List<string> { "box", "goto", ((double)nx.Value).ToString("0.###", Inv), ((double)ny.Value).ToString("0.###", Inv) };
+            var args = new System.Collections.Generic.List<string> { main.MachineType, "goto", ((double)nx.Value).ToString("0.###", Inv), ((double)ny.Value).ToString("0.###", Inv) };
             if (homed) args.Add("nohome");
             status.Text = homed ? "Moving..." : "Homing, then moving (about 30 s)...";
             tools.Run("up3dcenter.exe", args.ToArray(), (code, output) =>
@@ -104,10 +104,13 @@ namespace OpenBoxBridge
     {
         public double Result;
         const double Paper = 0.10;          // sheet of printer paper
-        const double FastTo = 200.0;        // below UP Studio's figure (206) and the real one (~230)
-        const double BigStepMax = 200.0;    // 10 mm steps stop here
-        const double MidStepMax = 220.0;    // 5 mm steps stop here
-        const double Travel = 250.0;        // never ask for more than this
+        // UP Box+: below UP Studio's figure (206) and the real one (~230).
+        // UP300 (experimental): its real figure isn't known yet, so the fast move stops lower
+        // and 5 mm steps go further.
+        double FastTo { get { return main != null && main.IsUp300 ? 150.0 : 200.0; } }
+        double BigStepMax { get { return main != null && main.IsUp300 ? 150.0 : 200.0; } }    // 10 mm steps stop here
+        double MidStepMax { get { return main != null && main.IsUp300 ? 250.0 : 220.0; } }    // 5 mm steps stop here
+        double Travel { get { return main != null && main.IsUp300 ? 270.0 : 250.0; } }   // never ask for more than this
         readonly ToolRunner tools;
         readonly MainForm main;
         readonly double cx, cy, current;
@@ -184,7 +187,7 @@ namespace OpenBoxBridge
             if (tools.BusyUser) return;
             ready = false; havePrinterZ = false; raised = 0; tracked = 0; raised0 = double.NaN;
             status.Text = "Homing, then moving to the centre (about 30 s)...";
-            var args = new[] { "box", "goto", cx.ToString("0.###", Inv), cy.ToString("0.###", Inv) };
+            var args = new[] { main.MachineType, "goto", cx.ToString("0.###", Inv), cy.ToString("0.###", Inv) };
             tools.Run("up3dcenter.exe", args, (code, output) =>
             {
                 if (IsDisposed) return;
@@ -206,7 +209,7 @@ namespace OpenBoxBridge
             tracked += up;
             status.Text = (up > 0 ? "Raising" : "Lowering") + " the bed " + Math.Abs(up).ToString("0.##", Inv) + " mm...";
             // up3dctl jog: Z is the machine axis, bed up = negative
-            tools.Run("up3dctl.exe", new[] { "box", "jog", "0", "0", (-up).ToString("0.###", Inv) }, (code, output) =>
+            tools.Run("up3dctl.exe", new[] { main.MachineType, "jog", "0", "0", (-up).ToString("0.###", Inv) }, (code, output) =>
             {
                 if (IsDisposed) return;
                 if (code != 0) { status.Text = "Move failed - see the Console page."; main.LogFromDialog(output.Trim()); Refresh2(); return; }
@@ -259,7 +262,7 @@ namespace OpenBoxBridge
             lowered = true;
             double down = Math.Min(10.0, raised);
             main.LogFromDialog("Lowering the bed " + down.ToString("0.#", Inv) + " mm away from the nozzle.");
-            tools.Run("up3dctl.exe", new[] { "box", "jog", "0", "0", down.ToString("0.###", Inv) }, (c, o) => { });
+            tools.Run("up3dctl.exe", new[] { main.MachineType, "jog", "0", "0", down.ToString("0.###", Inv) }, (c, o) => { });
         }
     }
 

@@ -20,6 +20,10 @@ bool     UP3D_SetParameter(uint8_t param, uint32_t value);
 
 bool     UP3D_GetSystemVar(uint8_t param, int32_t *var);
 bool     UP3D_GetPrinterStatus(TT_tagPrinterStatus *status);
+uint32_t UP3D_GetPrinterModelId(void);   /* 0x2783 = UP300, 0x2710 = UP Box+ */
+typedef void (*up3d_progress_fn)(uint32_t sent, uint32_t total);
+int      UP3D_SendProgramSD( const UP3D_BLK *blks, uint32_t n, int method, up3d_progress_fn progress );
+int      UP3D_StreamProgram( const UP3D_BLK *blks, uint32_t n, up3d_progress_fn progress );
 bool     UP3D_GetPrinterInfo(TT_tagPrinterInfoHeader *pihdr, TT_tagPrinterInfoName *piname, TT_tagPrinterInfoData *pidata, TT_tagPrinterInfoSet pisets[8]);
 
 bool     UP3D_ClearProgramBuf();

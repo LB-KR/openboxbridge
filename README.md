@@ -8,7 +8,8 @@ OpenBoxBridge is a small Windows app plus an improved version of the open-source
 the printer down the USB cable.
 
 > Made for and tested on the **UP Box+** (firmware ROM 6.15) on Windows 10/11.
-> Other UP models (UP Box, UP Mini, UP Plus 2) may work but are untested.
+> Other UP models (UP Box, UP Mini, UP Plus 2) may work but are untested. **UP300:** experimental
+> support in testing, see [docs/UP300.md](docs/UP300.md).
 >
 > OpenBoxBridge is not affiliated with or endorsed by Tiertime. "UP" and "UP Box" are trademarks of
 > Beijing Tiertime Technology Co., Ltd., used here only to say which printer this works with.
@@ -115,6 +116,19 @@ writes UP machine code (`.umc`). `up3dload` stores the job on the printer over U
 This software drives a machine with a hot nozzle and a heated bed. Calibrate before printing, watch
 first prints, and keep the printer's own button within reach. Provided without warranty
 (see the licence).
+
+## Community and related projects
+
+Questions, bug reports and test results from other UP models are welcome in
+**[Issues](../../issues)**. Other places UP owners gather:
+
+- [Tiertime user forum](https://forum.tiertime.com/) ([Software section](https://forum.tiertime.com/c/software))
+- [MaikStohn/UP3D#31](https://github.com/MaikStohn/UP3D/issues/31): the original layer-lean issue
+- [UP3D-gcode/UP3D](https://github.com/UP3D-gcode/UP3D): the maintained UP3D tools this project builds on
+- [MaikStohn/UP3D](https://github.com/MaikStohn/UP3D): the original UP3D project
+- Reddit: [r/3Dprinting](https://www.reddit.com/r/3Dprinting/), [r/FixMyPrint](https://www.reddit.com/r/FixMyPrint/),
+  [r/OrcaSlicer](https://www.reddit.com/r/OrcaSlicer/)
+- Tiertime on Facebook: [facebook.com/up3dprinters](https://www.facebook.com/up3dprinters)
 
 ## Credits and licence
 

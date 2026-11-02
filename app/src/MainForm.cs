@@ -56,7 +56,7 @@ namespace OpenBoxBridge
         JobList jobList; Thumb jobThumb; Lbl jobsName, jobsInfo; FlatButton btnJobLoad, btnJobPrint, btnJobFolder, btnJobRemove;
 
         // ---- setup page ----
-        NumericUpDown numNozzle, numOX, numOY; ComboBox cmbMotion; CheckBox chkRotate, chkLive, chkDark;
+        NumericUpDown numNozzle, numOX, numOY, numESteps; Label lblUp300; ComboBox cmbUp300Send; ComboBox cmbMotion; CheckBox chkRotate, chkLive, chkDark;
         Lbl setupState, printerInfo, lblPrinterSn; FlatButton btnCentre, btnCheck, btnOrca, btnPrusa, btnBambu, btnSnap, btnNozzle;
 
         // ---- console ----
@@ -80,6 +80,7 @@ namespace OpenBoxBridge
             Theme.Init(S.GetB("Dark"));
             Tools = new ToolRunner(Bin, this);
             Tools.Note += m => Log(m);
+            Tools.Env = ToolEnv;
             int stale = Tools.KillLeftovers();
             if (stale > 0) Log("Ended " + stale + " printer tool(s) left running from before - they were blocking the USB connection.");
 
@@ -531,12 +532,71 @@ namespace OpenBoxBridge
             B(about, "App folder", 16, 88, 160, 34, BtnKind.Ghost, () => Process.Start("explorer.exe", "\"" + Program.Root + "\""), Theme.GFolder);
             B(about, "Read me", 184, 88, 160, 34, BtnKind.Ghost, () => { string r = Path.Combine(Program.Root, "README.txt"); if (File.Exists(r)) Process.Start("notepad.exe", "\"" + r + "\""); });
             T(about, "OpenBoxBridge " + Program.Version + "  ·  free software (GPL-3.0)  ·  not affiliated with Tiertime", 16, 134, 536, 18, Theme.Small, Theme.Faint);
+
+            // ---- UP300 (experimental) ----
+            var u3 = MkCard(p, "UP300 (experimental - test version)", 16, 560, 1168, 136);
+            lblUp300 = T(u3, "", 16, 40, 780, 20, Theme.Base, Theme.Muted);
+            B(u3, "Run diagnostics", 816, 34, 170, 32, BtnKind.Secondary, RunUp300Diagnostics, Theme.GList);
+            B(u3, "Testing guide", 994, 34, 158, 32, BtnKind.Ghost, () => { string r = Path.Combine(Program.Root, "UP300-TESTING.txt"); if (File.Exists(r)) Process.Start("notepad.exe", "\"" + r + "\""); else Alert("UP300-TESTING.txt isn't in the app folder."); });
+            T(u3, "Extruder steps/mm", 16, 72, 140, 18, Theme.Small, Theme.Muted);
+            numESteps = N(u3, 16, 92, 110, 10, 5000, 1, 0.5m, S.GetD("ESteps") > 1 ? S.GetD("ESteps") : Up300ESteps);
+            numESteps.ValueChanged += (s, e) => { if (IsUp300) { S.Set("ESteps", (double)numESteps.Value); S.Save(); } };
+            T(u3, "Sending a job", 150, 72, 140, 18, Theme.Small, Theme.Muted);
+            cmbUp300Send = C(u3, 150, 92, 300, Up300SendModes.Keys, Up300SendModes.ContainsKey(S.GetS("Up300Send")) ? S.GetS("Up300Send") : "Automatic");
+            cmbUp300Send.SelectedIndexChanged += (s, e) => { S.Set("Up300Send", cmbUp300Send.SelectedItem as string); S.Save(); };
+            T(u3, "Used only when a UP300 is connected. Extruder: set it from the Extrude test (new = current x 50 / mm pushed). " +
+                  "Automatic tries storing the job two ways and offers streaming if both fail.", 470, 74, 682, 40, Theme.Small, Theme.Faint);
+            UpdateUp300Card();
+        }
+
+        static readonly Dictionary<string, string> Up300SendModes = new Dictionary<string, string>
+        {
+            { "Automatic", "" },
+            { "Stored - UP3D method", "--method=0" },
+            { "Stored - UP Studio method", "--method=1" },
+            { "Stream while printing", "--method=2" },
+        };
+
+        void UpdateUp300Card()
+        {
+            if (lblUp300 == null) return;
+            bool on = IsUp300 && connected;
+            string sn = S.GetS("ActivePrinter");
+            lblUp300.Text = IsUp300 ? "●  UP300 " + (sn.Length > 0 ? "serial " + sn + " " : "") + (on ? "connected" : "(last connected)") + " - test support. Work through UP300-TESTING.txt in order."
+                                    : "No UP300 connected. These settings apply only to a Tiertime UP300; the UP Box+ is not affected.";
+            lblUp300.ForeColor = IsUp300 ? Theme.Warn : Theme.Muted;
+            numESteps.Enabled = cmbUp300Send.Enabled = IsUp300;
+        }
+
+        void RunUp300Diagnostics()
+        {
+            string f = Path.Combine(Jobs, "up300-diagnostics_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".txt");
+            string snap = Path.ChangeExtension(f, null) + "_snapshot.txt";
+            var sb = new StringBuilder();
+            sb.AppendLine("OpenBoxBridge " + Program.Version + " - printer diagnostics (read-only)  " + DateTime.Now.ToString("yyyy-MM-dd HH:mm"));
+            sb.AppendLine("Model setting: " + (S.GetS("Model").Length > 0 ? S.GetS("Model") : "(none yet)") + "   extruder steps/mm: " + S.GetD("ESteps").ToString("0.###", Inv) + "   sending: " + S.GetS("Up300Send"));
+            Log("Reading printer details for diagnostics (read-only)...");
+            Tools.Run("up3dinfo.exe", new string[0], (c1, o1) =>
+            {
+                sb.AppendLine().AppendLine("===== up3dinfo (exit " + c1 + ") =====").AppendLine(o1);
+                Tools.Run("up3dstatus.exe", new string[0], (c2, o2) =>
+                {
+                    sb.AppendLine("===== up3dstatus (exit " + c2 + ") =====").AppendLine(o2);
+                    Tools.Run("up3dsnap.exe", new[] { snap }, (c3, o3) =>
+                    {
+                        sb.AppendLine("===== up3dsnap (exit " + c3 + ") =====").AppendLine(o3);
+                        try { File.WriteAllText(f, sb.ToString()); } catch (Exception ex) { Log("Couldn't write " + f + ": " + ex.Message); return; }
+                        Log("Diagnostics saved: " + f + (File.Exists(snap) ? " and " + Path.GetFileName(snap) : ""));
+                        try { Process.Start("explorer.exe", "/select,\"" + f + "\""); } catch { }
+                    });
+                });
+            });
         }
 
         void UpdateSetupState()
         {
             string sn = S.GetS("ActivePrinter");
-            if (lblPrinterSn != null) lblPrinterSn.Text = sn.Length > 0 ? "Settings for printer serial " + sn + " (each printer keeps its own)" : "Settings are saved per printer once one is connected";
+            if (lblPrinterSn != null) lblPrinterSn.Text = sn.Length > 0 ? "Settings for " + (IsUp300 ? "UP300 (experimental) " : "") + "printer serial " + sn + " (each printer keeps its own)" : "Settings are saved per printer once one is connected";
             if ((double)numNozzle.Value < 50) { setupState.Text = "●  Nozzle height not set - press Calibrate."; setupState.ForeColor = Theme.Bad; }
             else if (!S.GetB("NozzleMeasured")) { setupState.Text = "●  Nozzle height not measured on this printer yet - press Calibrate."; setupState.ForeColor = Theme.Bad; }
             else if (!S.GetB("Calibrated")) { setupState.Text = "●  Bed centre not set yet - press Find bed centre once."; setupState.ForeColor = Theme.Warn; }
@@ -616,7 +676,7 @@ namespace OpenBoxBridge
             string line = output.Split('\r', '\n').LastOrDefault(l => Regex.IsMatch(l, "^[^;]+;[^;]+;[^;]+;"));
             if (code != 0 || line == null)
             {
-                connected = false; isPrinting = false;
+                connected = false; isPrinting = false; UpdateUp300Card();
                 bool cleared = false;
                 if (JobActive) jobGap = true;
                 // "Access denied" usually means one of our own tools got stuck holding the USB
@@ -635,7 +695,7 @@ namespace OpenBoxBridge
                 return;
             }
             var f = line.Split(';');
-            connected = true;
+            connected = true; UpdateUp300Card();
             bool wasPrinting = isPrinting;
             isPrinting = f[0] == "Running Program";
             lastSystem = f[2];
@@ -650,6 +710,7 @@ namespace OpenBoxBridge
             }
             if (f.Length >= 17) bed = (float)D(f[16]);
             if (f.Length >= 18) OnPrinterSerial(f[17].Trim());
+            if (f.Length >= 19) OnPrinterModel(f[18].Trim());
             float nTarget = (non != 0) ? nset : 0, bTarget = (bon != 0) ? bset : 0;
 
             tNozzle.Set(Math.Round(nozzle) + Deg + (nTarget > 0 ? " / " + nTarget + Deg : ""),
@@ -852,7 +913,7 @@ namespace OpenBoxBridge
             if (Regex.IsMatch(path, @"[^\x20-\x7E]")) { src = Path.Combine(Jobs, "_input.gcode"); File.Copy(path, src, true); }
             string umc = Path.Combine(Jobs, Regex.Replace(Path.GetFileNameWithoutExtension(path), @"[^A-Za-z0-9_.-]", "_") + ".umc");
             double[] m; if (!Motion.TryGetValue(cmbMotion.SelectedItem as string ?? "Normal", out m)) m = Motion["Normal"];
-            var args = new List<string> { "box", src, umc, Num(h), Num(m[0]), Num(m[1]), Num(m[2]), Num((double)numOX.Value), Num((double)numOY.Value) };
+            var args = new List<string> { MachineType, src, umc, Num(h), Num(m[0]), Num(m[1]), Num(m[2]), Num((double)numOX.Value), Num((double)numOY.Value) };
             if (chkRotate.Checked) args.Add("rot180");
             Log("Converting " + Path.GetFileName(path) + " for the UP Box+ ...");
             jobState.Text = "Converting..."; jobBar.Fill = Theme.Accent; jobBar.Value = 0;
@@ -872,21 +933,47 @@ namespace OpenBoxBridge
                              "The bed heats first; the print starts a few minutes later. Send to printer now?";
                 if (!Confirm(msg, "Send to printer")) { Log("Not sent."); jobState.Text = ""; return; }
                 Log("Sending to the printer over USB...");
-                Tools.Run("up3dload.exe", new[] { umc }, (code2, out2) =>
+                Action started = () =>
                 {
-                    if (code2 == 0)
+                    jobBar.Value = 0;
+                    S.Set("JobFile", path); S.Set("JobStart", DateTime.Now.ToString("o", Inv));
+                    S.Set("JobGrams", g != null ? g.Grams : 0.0); S.Set("JobLayers", (double)convertedLayers);
+                    S.Save();
+                    S.Set("JobLastPercent", 0.0); S.Set("JobPrinter", S.GetS("ActivePrinter")); S.Save();
+                    jobSawRunning = false; jobGap = false; jobFirstCheck = DateTime.MinValue;
+                    jobState.Text = "Sent. Heating up - the print starts when the bed and nozzle are ready.";
+                    Log("Sent. The printer heats up and starts on its own.");
+                    current = g ?? current; ShowJobCard();
+                    nextPoll = DateTime.Now;
+                    UpdateEnabled();
+                };
+                Action<string> progressLine = l =>
+                {
+                    var pm2 = Regex.Match(l, @"^UPload: [\d.]+ kB sent \((\d+)%\)");
+                    if (pm2.Success) { jobBar.Value = Math.Min(100, int.Parse(pm2.Groups[1].Value)); jobState.Text = "Streaming " + pm2.Groups[1].Value + "% sent - keep the PC connected"; }
+                    else Log(l);
+                };
+                string sendMode = IsUp300 && Up300SendModes.ContainsKey(S.GetS("Up300Send")) ? Up300SendModes[S.GetS("Up300Send")] : "";
+                if (sendMode == "--method=2" && !Confirm("UP300 test: the job will be streamed while it prints.\n\n  - the USB cable and this PC must stay connected until the print ends\n" +
+                        "  - this app can't show progress or stop it while it streams - use the printer's own button to stop\n\nContinue?", "UP300 test: stream the job"))
+                { Log("Not sent."); jobState.Text = ""; return; }
+                if (sendMode == "--method=2") jobState.Text = "Streaming to the UP300 - keep the PC connected.";
+                var loadArgs = sendMode.Length > 0 ? new[] { umc, sendMode } : new[] { umc };
+                if (sendMode.Length > 0) Log("UP300 test: sending with " + sendMode + ".");
+                Tools.Run("up3dload.exe", loadArgs, (code2, out2) =>
+                {
+                    if (code2 == 0) started();
+                    else if (IsUp300 && sendMode.Length == 0 && Confirm("The UP300 didn't accept the job as a stored print (code " + code2 + ").\n\n" +
+                        "Test option: stream it instead. The job is sent while it prints, so:\n  - the USB cable and this PC must stay connected until the print ends\n" +
+                        "  - this app can't show progress or stop it while it streams - use the printer's own button to stop\n\nStream the job now?", "UP300 test: stream the job"))
                     {
-                        jobBar.Value = 0;
-                        S.Set("JobFile", path); S.Set("JobStart", DateTime.Now.ToString("o", Inv));
-                        S.Set("JobGrams", g != null ? g.Grams : 0.0); S.Set("JobLayers", (double)convertedLayers);
-                        S.Save();
-                        S.Set("JobLastPercent", 0.0); S.Set("JobPrinter", S.GetS("ActivePrinter")); S.Save();
-                        jobSawRunning = false; jobGap = false; jobFirstCheck = DateTime.MinValue;
-                        jobState.Text = "Sent. Heating up - the print starts when the bed and nozzle are ready.";
-                        Log("Sent. The printer heats up and starts on its own.");
-                        current = g ?? current; ShowJobCard();
-                        nextPoll = DateTime.Now;
-                        UpdateEnabled();
+                        Log("UP300 test: streaming the job (method 2).");
+                        jobState.Text = "Streaming to the UP300 - keep the PC connected.";
+                        Tools.Run("up3dload.exe", new[] { umc, "--method=2" }, (code3, out3) =>
+                        {
+                            if (code3 == 0) { Log("Streaming finished: the whole job is on the printer."); started(); }
+                            else { jobState.Text = "Streaming failed - see Console."; UsbHint(out3); Alert("Streaming failed (code " + code3 + "). The Console page has the details.", MessageBoxIcon.Error); }
+                        }, progressLine);
                     }
                     else
                     {
@@ -958,7 +1045,7 @@ namespace OpenBoxBridge
         void DoHome()
         {
             if (!Confirm("Home all axes? The bed moves to the bottom and the head goes to its home corner.", "Home")) return;
-            Ctl("up3dctl.exe", new[] { "box", "home" }, "Homing...", () => { homed = true; UpdatePos(); });
+            Ctl("up3dctl.exe", new[] { MachineType, "home" }, "Homing...", () => { homed = true; UpdatePos(); });
         }
         void DoInit()
         {
@@ -1009,7 +1096,7 @@ namespace OpenBoxBridge
                 posX += Sign * dx; posY += Sign * dy; posZ += dz;
                 UpdatePos();
             }
-            Ctl("up3dctl.exe", new[] { "box", "jog", Num(Sign * dx), Num(Sign * dy), Num(dz) }, "Move X" + Num(dx) + " Y" + Num(dy) + " Z" + Num(dz));
+            Ctl("up3dctl.exe", new[] { MachineType, "jog", Num(Sign * dx), Num(Sign * dy), Num(dz) }, "Move X" + Num(dx) + " Y" + Num(dy) + " Z" + Num(dz));
         }
 
         void Extrude(bool withdraw)
@@ -1019,9 +1106,9 @@ namespace OpenBoxBridge
             if (withdraw)
             {
                 if (!Confirm("Withdraw " + l + " mm of filament at " + t + Deg + "C?\n\nThe nozzle heats first; the filament is pulled out once it's hot, then the heater turns off.", "Withdraw filament")) return;
-                Ctl("up3dctl.exe", new[] { "box", "withdraw", t.ToString(), l.ToString() }, "Withdraw: heating to " + t + Deg + "C, then pulling " + l + " mm...");
+                Ctl("up3dctl.exe", new[] { MachineType, "withdraw", t.ToString(), l.ToString() }, "Withdraw: heating to " + t + Deg + "C, then pulling " + l + " mm...");
             }
-            else Ctl("up3dctl.exe", new[] { "box", "extrude", t.ToString(), l.ToString(), "120" }, "Extrude: heating to " + t + Deg + "C, then pushing " + l + " mm (heater stays on)...");
+            else Ctl("up3dctl.exe", new[] { MachineType, "extrude", t.ToString(), l.ToString(), "120" }, "Extrude: heating to " + t + Deg + "C, then pushing " + l + " mm (heater stays on)...");
         }
 
         void CheckPrinter()
@@ -1034,7 +1121,8 @@ namespace OpenBoxBridge
                 if (code == 0 && m.Success)
                 {
                     var st = Regex.Match(output, @"Steps/mm-X:([\d.]+)\s+Steps/mm-Y:([\d.]+)\s+Steps/mm-Z:([\d.]+)");
-                    printerInfo.Text = "Connected over USB.\n\nPrinter type " + m.Groups[1].Value + "   ·   serial " + m.Groups[2].Value + "   ·   firmware " + m.Groups[3].Value +
+                    bool u3 = m.Groups[1].Value.ToLowerInvariant() == "2783";
+                    printerInfo.Text = "Connected over USB." + (u3 ? "  UP300 - experimental support." : "") + "\n\nPrinter type " + m.Groups[1].Value + "   ·   serial " + m.Groups[2].Value + "   ·   firmware " + m.Groups[3].Value +
                         (st.Success ? "\nSteps/mm: X " + D(st.Groups[1].Value) + "  Y " + D(st.Groups[2].Value) + "  Z " + D(st.Groups[3].Value) : "");
                     printerInfo.ForeColor = Theme.Ink;
                     Log("Printer found (type " + m.Groups[1].Value + ", firmware " + m.Groups[3].Value + ").");
@@ -1088,6 +1176,46 @@ namespace OpenBoxBridge
         // =====================================================================================
         // several printers: each serial number keeps its own calibration
         // =====================================================================================
+        // UP300 support (experimental): same controller family as the UP Box+, different
+        // motor steps, USB endpoint and job storage; see docs/UP300.md
+        const double Up300ESteps = 213.5;
+        public bool IsUp300 { get { return S.GetS("Model") == "up300"; } }
+        /// <summary>Machine type passed to the converter and printer tools.</summary>
+        public string MachineType { get { return IsUp300 ? "up300" : "box"; } }
+        IEnumerable<KeyValuePair<string, string>> ToolEnv()
+        {
+            if (IsUp300)
+            {
+                double e = S.GetD("ESteps"); if (e <= 1) e = Up300ESteps;
+                yield return new KeyValuePair<string, string>("UP3D_ESTEPS", e.ToString("0.###", Inv));
+            }
+        }
+        void OnPrinterModel(string id)
+        {
+            uint v; if (!uint.TryParse(id, out v) || v == 0) return;
+            string model = v == 0x2783 ? "up300" : "box";
+            if (S.GetS("Model") == model) return;
+            S.Set("Model", model);
+            if (model == "up300" && S.GetD("ESteps") <= 1) S.Set("ESteps", Up300ESteps);
+            S.Save();
+            BeginInvoke((MethodInvoker)delegate
+            {
+                if (numESteps != null) numESteps.Value = Clamp(numESteps, S.GetD("ESteps") > 1 ? S.GetD("ESteps") : Up300ESteps);
+                UpdateUp300Card();
+                UpdateSetupState();
+            });
+            if (model == "up300")
+            {
+                Log("UP300 connected - experimental support (motor steps 161/mm, extruder " + S.GetD("ESteps").ToString("0.#", Inv) + " steps/mm).");
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    Alert("This is a Tiertime UP300.\n\nOpenBoxBridge's UP300 support is a test version. Work through UP300-TESTING.txt in the app folder, in order, " +
+                          "before printing anything - start with the tests that don't heat or print.", MessageBoxIcon.Information);
+                });
+            }
+            else Log("Printer model: UP Box+ family (id " + v.ToString("X4") + ").");
+        }
+
         string connectedSerial = "";
         void OnPrinterSerial(string sn)
         {
@@ -1101,6 +1229,8 @@ namespace OpenBoxBridge
             numOX.Value = Clamp(numOX, S.GetD("OffsetX"));
             numOY.Value = Clamp(numOY, S.GetD("OffsetY"));
             chkRotate.Checked = S.GetB("Rotate180");
+            if (numESteps != null) numESteps.Value = Clamp(numESteps, S.GetD("ESteps") > 1 ? S.GetD("ESteps") : Up300ESteps);
+            UpdateUp300Card();
             UpdateSetupState(); UpdatePos();
             if (prev.Length == 0) { Log("Printer serial " + sn + " connected - the current calibration is saved for it."); return; }
             if (known)

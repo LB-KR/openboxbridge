@@ -53,8 +53,8 @@ namespace OpenBoxBridge
         }
 
         /// <summary>Settings that belong to one printer (by serial number).</summary>
-        public static readonly string[] PrinterKeys = { "NozzleHeight", "OffsetX", "OffsetY", "Calibrated", "NozzleMeasured", "CentreVersion", "Rotate180" };
-        static readonly object[] PrinterDefaults = { 0.0, 0.0, 0.0, false, false, 0.0, true };
+        public static readonly string[] PrinterKeys = { "NozzleHeight", "OffsetX", "OffsetY", "Calibrated", "NozzleMeasured", "CentreVersion", "Rotate180", "Model", "ESteps" };
+        static readonly object[] PrinterDefaults = { 0.0, 0.0, 0.0, false, false, 0.0, true, "", 0.0 };
 
         public bool KnowsPrinter(string sn) { return v.ContainsKey("Printer." + sn + ".NozzleHeight"); }
 
@@ -171,6 +171,8 @@ namespace OpenBoxBridge
 
         readonly System.Threading.Timer watchdog;
         public event Action<string> Note;   // messages for the log (from any thread)
+        /// <summary>Extra environment variables for every tool run (e.g. the extruder steps override).</summary>
+        public Func<System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<string, string>>> Env;
 
         /// <summary>How long a tool may go without saying anything before it's treated as stuck.
         /// A stuck tool keeps the USB connection, so nothing else can reach the printer.</summary>
@@ -295,6 +297,8 @@ namespace OpenBoxBridge
                     UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
                     RedirectStandardError = true, WorkingDirectory = bin
                 };
+                var env = Env;
+                if (env != null) foreach (var kv in env()) psi.EnvironmentVariables[kv.Key] = kv.Value;
                 using (var p = Process.Start(psi))
                 {
                     lock (gate) job.Proc = p;

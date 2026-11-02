@@ -4,7 +4,7 @@
 //   up3dsnap <output.txt>
 //
 // Uses only read commands: 0x76 (read one parameter, 0x00-0xFF)
-// and 0x52 (read the printer information block). Nothing is written.
+// and 0x52 (read the printer information block). No settings are changed.
 // Two snapshots taken before/after changing something in UP Studio
 // show where that value lives.
 // Added for UP Box+ USB Print (GPL v2, like the rest of UP3D).
@@ -18,6 +18,7 @@
 #include <time.h>
 
 #include "up3d.h"
+#include "up3dcomm.h"
 
 static void hexdump(FILE *f, const char *title, const uint8_t *p, size_t n)
 {
@@ -63,6 +64,20 @@ int main(int argc, char *argv[])
     }
   }
   else fprintf(f, "[info] could not read\n");
+
+  /* raw answers to both info requests, so an unfamiliar printer can be decoded later */
+  {
+    static const uint8_t rq[2][4] = { { 0x52, 0x00 }, { 0x52, 0x77, 0xA6, 0x5B } };
+    static uint8_t raw[8192];
+    for( int a = 0; a < 2; a++ )
+    {
+      int n = 0, to = 800;
+      if( UP3DCOMM_Write( rq[a], a ? 4 : 2 ) == (a ? 4 : 2) )
+        for( ;; ) { int k = UP3DCOMM_ReadTO( raw + n, sizeof(raw) - n, to ); if( k <= 0 ) break; n += k; to = 60; if( n >= (int)sizeof(raw) ) break; }
+      hexdump(f, a ? "raw info answer 52 77 A6 5B" : "raw info answer 52 00", raw, n);
+    }
+    fprintf(f, "[usb] product id %04X\n", UP3DCOMM_GetPID());
+  }
 
   UP3D_Close();
   fclose(f);

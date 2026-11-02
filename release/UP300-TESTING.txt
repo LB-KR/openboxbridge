@@ -1,0 +1,101 @@
+OpenBoxBridge 1.1 - UP300 TEST VERSION
+=======================================
+
+Thanks for testing! UP300 support is new and has only been worked out from your USB
+recordings, never on a real UP300. Please go through these steps IN ORDER and stop at
+the first one that doesn't behave. Keep a hand near the printer's own button: pressing
+it stops whatever the printer is doing.
+
+What to send back at the end (or as soon as something goes wrong):
+  - up300-diagnostics.txt and up300-snapshot.txt (step 1)
+  - the text from the app's Console page (Console > Copy all, then paste into an email)
+  - what you saw, and any measurements asked for below
+
+
+BEFORE YOU START
+----------------
+- Unzip the whole folder somewhere permanent (e.g. Documents). Don't run it from inside the zip.
+- Close UP Studio and Wand (check the system tray too). Only one program can use the
+  printer over USB at a time.
+- Windows may say the app is from an unknown publisher: More info > Run anyway.
+
+
+1. DIAGNOSTICS (read-only, nothing moves)
+-----------------------------------------
+Printer on and connected. Double-click  UP300-diagnostics.bat
+It writes  up300-diagnostics.txt  and  up300-snapshot.txt  in this folder.
+(Or, once the app is open: Setup > UP300 section > Run diagnostics - it saves the same
+two files in the jobs folder and shows them.)
+Please send both files. They only contain printer settings and model information.
+
+
+2. CONNECT (nothing moves)
+--------------------------
+Run OpenBoxBridge.exe. It should show a message that a UP300 is connected.
+Setup page > Check printer: it should say "UP300 - experimental support" and show
+  Steps/mm X 161  Y 161  Z 805.
+The Dashboard should show the nozzle and bed temperatures. Check they look right.
+
+
+3. INITIALISE (the printer's own routine)
+-----------------------------------------
+Dashboard > Initialise. The printer runs its own homing routine (the same one UP Studio
+uses). This is the safest first movement test.
+
+
+4. HOME AND JOG (no heat)
+-------------------------
+Dashboard > Control: the house button in the middle of the arrows homes X, Y and Z like a
+normal start. Then set Step (mm) to 10, press X+ once and measure how far the head actually moved (a ruler against the
+frame is fine). Then the same for Y.
+  Expected: 10 mm. If it moves 2.5 mm or 40 mm instead, stop and tell me.
+Also note whether +X / +Y move the way you expect.
+
+
+5. BED CENTRE AND NOZZLE HEIGHT (no heat)
+-----------------------------------------
+Setup > Find bed centre... then Calibrate...
+The nozzle-height calibration raises the bed. On the UP300 the "Fast" button stops at
+150 mm so it can't reach your modified build plate; after that use 5 mm, then 1 mm,
+then 0.1 mm steps until a sheet of paper just drags under the nozzle.
+Please tell me the number it measures.
+
+
+6. JOB STORING TEST (no heat, no plastic)
+-----------------------------------------
+This checks the part I'm least sure about: sending a whole job to the printer.
+Open  tests\STOP test (no heat).gcode  in the app (Open G-code..., or drag it onto the window)
+and press Print. It only moves the head in the air.
+Setup > UP300 section > "Sending a job" should be on Automatic for this test.
+The app tries two ways of storing the job on the printer. Possible results:
+  a) It says "Sent" and the head starts moving: great. Press STOP in the app after a
+     few seconds and check the head stops.
+  b) It says the UP300 didn't accept the job as a stored print, and offers to STREAM it:
+     say Yes. The head should start moving while it's still being sent. You can't stop
+     it from the app in this mode - use the printer's button.
+  c) Something else: send me the Console text.
+If a) or b) didn't work, you can also try each method on its own with the same test file:
+"Stored - UP3D method", "Stored - UP Studio method" and "Stream while printing".
+Tell me which ones worked.
+
+
+7. EXTRUDER TEST (heats the nozzle)
+-----------------------------------
+Filament loaded. Make a mark on the filament exactly 120 mm above where it enters the
+extruder. Dashboard > Extruder: Temp 210, Length 50, press Extrude. When it has finished, measure from the
+mark to the extruder entry again:
+  pushed = 120 - what you measure now        (should be 50 mm)
+New value for Setup > UP300 section > "Extruder steps/mm":
+  new = current value x 50 / pushed
+e.g. current 213.5, pushed 40 mm  ->  213.5 x 50 / 40 = 266.9
+Enter it, and repeat the test until it pushes 49-51 mm. Tell me the final value.
+
+
+8. FIRST PRINT
+--------------
+Only once 1-7 are good. In OrcaSlicer, PrusaSlicer or Bambu Studio, install the presets
+from Setup and use printer "UP Box+ USB" (the UP300 has the same bed size; the preset
+just limits the height to 205 mm). Print a 20 mm cube with "UP Box+ 0.20mm" and
+"UP PLA (Box+)". Watch the first layer, and be ready to press the printer's button.
+
+Thanks again!

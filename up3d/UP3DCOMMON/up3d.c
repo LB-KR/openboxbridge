@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/time.h>
+#include <time.h>
 #include <math.h>
 
 #include "compat.h"
@@ -258,40 +260,72 @@ bool UP3D_SendRandom()
   return true;
 }
 
+/* Collects one complete answer: everything the printer sends until it goes quiet. */
+static int _up3d_collect( uint8_t *buf, int max, int first_timeout )
+{
+  int total = 0, to = first_timeout;
+  while( total < max )
+  {
+    int n = UP3DCOMM_ReadTO( buf + total, max - total, to );
+    if( n <= 0 ) break;
+    total += n;
+    to = 60;
+  }
+  return total;
+}
+
+/* The info block is the same on every model: header (28 bytes), name, data (56 bytes),
+   then the parameter sets (136 bytes each). The UP Box+ sends a leading 07 and a 63-byte
+   name in separate pieces; the UP300 sends it all at once with the name padded to 64. */
+static bool _up3d_parse_info( const uint8_t *b, int n, TT_tagPrinterInfoHeader *pihdr, TT_tagPrinterInfoName *piname,
+                              TT_tagPrinterInfoData *pidata, TT_tagPrinterInfoSet pisets[8] )
+{
+  int off = (n > 0 && b[0] == 7) ? 1 : 0;
+  if( n < off + 28 ) return false;
+  memcpy( pihdr, b + off, 28 );
+  if( pihdr->flt_unk1 < 0.5f || pihdr->flt_unk1 > 2.0f ) return false;
+  for( int nl = 63; nl <= 64; nl++ )
+  {
+    int d = off + 28 + nl;
+    if( n < d + 56 ) continue;
+    TT_tagPrinterInfoData t;
+    memcpy( &t, b + d, 56 );
+    if( t.u32_NumSets > 16 || !(t.f_steps_mm_x > 1.0f && t.f_steps_mm_x < 100000.0f) ) continue;
+    memset( piname, 0, sizeof(*piname) );
+    memcpy( piname->printer_name, b + off + 28, 62 );
+    *pidata = t;
+    if( pidata->u32_NumSets > 8 ) pidata->u32_NumSets = 8;
+    memset( pisets, 0, sizeof(TT_tagPrinterInfoSet) * 8 );
+    for( uint32_t s = 0; s < pidata->u32_NumSets; s++ )
+      if( n >= d + 56 + 136 * (int)(s + 1) ) memcpy( &pisets[s], b + d + 56 + 136 * s, 136 );
+    return true;
+  }
+  return false;
+}
+
 bool UP3D_GetPrinterInfo(TT_tagPrinterInfoHeader *pihdr, TT_tagPrinterInfoName *piname, TT_tagPrinterInfoData *pidata, TT_tagPrinterInfoSet pisets[8])
 {
-  static const uint8_t UP3D_CMD_52[] = { 0x52, 0x00 }; //GetPrinterInfo
-  uint8_t resp[2048];
-  if( (UP3DCOMM_Write( UP3D_CMD_52, sizeof(UP3D_CMD_52) ) != sizeof(UP3D_CMD_52)) )
-    return false;
-  
-  if( (1 != UP3DCOMM_Read( resp, 1 )) || (7 != resp[0]) )
-    return false;
-
-
-  if( (sizeof(TT_tagPrinterInfoHeader) != UP3DCOMM_Read( (uint8_t*)pihdr,  sizeof(TT_tagPrinterInfoHeader) )) ||
-      (sizeof(TT_tagPrinterInfoName  ) != UP3DCOMM_Read( (uint8_t*)piname, sizeof(TT_tagPrinterInfoName) )) ||
-      (sizeof(TT_tagPrinterInfoData)   != UP3DCOMM_Read( (uint8_t*)pidata, sizeof(TT_tagPrinterInfoData) ))
-    )
-    return false;
-
-  if( pidata->u32_NumSets>8 )
-    return false;
-
-  uint32_t s;
-  for( s=0; s<pidata->u32_NumSets; s++ )
+  /* "52 00" is what UP3D always sent; "52 77 A6 5B" is what UP Studio sends (UP Box+ and UP300) */
+  static const uint8_t req[2][4] = { { 0x52, 0x00 }, { 0x52, 0x77, 0xA6, 0x5B } };
+  static const int     len[2]    = { 2, 4 };
+  static uint8_t buf[8192];
+  for( int a = 0; a < 2; a++ )
   {
-    if( (16 != UP3DCOMM_Read( (uint8_t*)(&pisets[s])+ 0, 16 )) ||
-        (60 != UP3DCOMM_Read( (uint8_t*)(&pisets[s])+16, 60 )) ||
-        (60 != UP3DCOMM_Read( (uint8_t*)(&pisets[s])+76, 60 ))
-      )
+    if( UP3DCOMM_Write( req[a], len[a] ) != len[a] )
       return false;
+    int n = _up3d_collect( buf, sizeof(buf), 800 );
+    if( _up3d_parse_info( buf, n, pihdr, piname, pidata, pisets ) )
+      return true;
   }
+  return false;
+}
 
-  if( (1 != UP3DCOMM_Read( resp, 1 )) || (6 != resp[0]) )
-    return false;
-
-  return true;
+/* Model from the info header: 0x2783 = UP300, 0x2710 = UP Box+ (others as UP3D knew them). */
+uint32_t UP3D_GetPrinterModelId(void)
+{
+  TT_tagPrinterInfoHeader h; TT_tagPrinterInfoName nm; TT_tagPrinterInfoData d; TT_tagPrinterInfoSet st[8];
+  if( UP3D_GetPrinterInfo( &h, &nm, &d, st ) ) return h.u32_printerid;
+  return 0;
 }
 
 ///////////////////////////////////////////
@@ -565,4 +599,155 @@ bool UP3D_GetPrinterStatus(TT_tagPrinterStatus *status)
 
   status->UnkMinusOne = htole64((int64_t)-1);
   return true;
+}
+
+///////////////////////////////////////////
+// Storing a program on the printer and starting it (a print job, or a long control
+// program). Two ways of doing it:
+//   method 0 - UP3D's: switch the SD program slot to write mode (6C 05 01) and stream
+//              the blocks into it, then check the printer's block counter (param C6).
+//   method 1 - UP Studio's (recorded on an UP Box+): put the blocks in the program
+//              buffer and commit them to slot 9 fourteen at a time (63 09 0E offset).
+// Returns 0 when the program is running, otherwise an error code:
+//   4 clear failed, 5 slot select failed, 6 write failed, 7 storing not confirmed,
+//   8 slot select for running failed, 9 start failed
+///////////////////////////////////////////
+
+static uint32_t _ms_now(void)
+{
+  struct timeval tv; gettimeofday(&tv, NULL);
+  return (uint32_t)(tv.tv_sec * 1000 + tv.tv_usec / 1000);
+}
+
+static void _up3d_job_header( const char *name )
+{
+  /* 22 6D 3C + 60 bytes: as UP Studio sends it (job date/time, optional UTF-16 name) */
+  uint8_t h[63]; uint8_t r[64];
+  memset( h, 0, sizeof(h) );
+  h[0] = 0x22; h[1] = 0x6D; h[2] = 0x3C;
+  time_t t = time(NULL); struct tm *lt = localtime(&t);
+  if( lt ) { h[10] = (uint8_t)(lt->tm_year % 100); h[11] = (uint8_t)(lt->tm_mon + 1); h[12] = (uint8_t)lt->tm_mday;
+             h[13] = (uint8_t)lt->tm_hour; h[14] = (uint8_t)lt->tm_min; h[15] = (uint8_t)lt->tm_sec; }
+  if( name )
+    for( int i = 0; name[i] && 16 + 2 * i + 1 < 63 - 8; i++ ) h[16 + 2 * i] = (uint8_t)name[i];
+  if( UP3DCOMM_Write( h, sizeof(h) ) == sizeof(h) )
+    UP3DCOMM_Read( r, sizeof(r) );
+}
+
+static void _up3d_cmd44( const uint8_t *c, int n )
+{
+  uint8_t r[64];
+  if( UP3DCOMM_Write( c, n ) == n ) UP3DCOMM_Read( r, sizeof(r) );
+}
+
+int UP3D_SendProgramSD( const UP3D_BLK *blks, uint32_t n, int method, up3d_progress_fn progress )
+{
+  if( method == 1 )
+  {
+    /* pad to whole groups of 14 with Stop blocks (they are never reached) */
+    uint32_t np = (n + 13) / 14 * 14;
+    UP3D_BLK *b = (UP3D_BLK*)malloc( sizeof(UP3D_BLK) * (np ? np : 1) );
+    if( !b ) return 6;
+    memcpy( b, blks, sizeof(UP3D_BLK) * n );
+    for( uint32_t i = n; i < np; i++ ) UP3D_PROG_BLK_Stop( &b[i] );
+
+    _up3d_job_header( NULL );
+    if( !UP3D_ClearProgramBuf() ) { free(b); return 4; }
+    uint32_t last_keep = _ms_now();
+    for( uint32_t off = 0; off < np; off += 70 )
+    {
+      uint32_t c = (np - off) > 70 ? 70 : (np - off);
+      if( !UP3D_WriteBlocks( b + off, (uint8_t)c ) ) { free(b); return 6; }
+      for( uint32_t g = 0; g < c; g += 14 )
+      {
+        uint32_t o = off + g;
+        uint8_t cmd[7] = { 0x63, 0x09, 0x0E, (uint8_t)o, (uint8_t)(o >> 8), (uint8_t)(o >> 16), (uint8_t)(o >> 24) };
+        if( UP3DCOMM_Write( cmd, 7 ) != 7 ) { free(b); return 6; }
+        usleep( 20000 );                       /* UP Studio leaves ~20 ms per group */
+      }
+      if( _ms_now() - last_keep > 1000 ) { UP3D_SetParameter( 0xC1, 0 ); last_keep = _ms_now(); }
+      if( progress ) progress( off + c > n ? n : off + c, n );
+    }
+    free(b);
+    _up3d_job_header( "OpenBoxBridge" );
+    { const uint8_t c1[2] = { 0x44, 0x04 }; _up3d_cmd44( c1, 2 ); }
+    { const uint8_t c2[6] = { 0x44, 0x05, 0, 0, 0, 0 }; _up3d_cmd44( c2, 6 ); }
+    if( !UP3D_ClearProgramBuf() ) return 8;
+    if( !UP3D_UseSDProgramBuf( 9, false ) ) return 8;
+    if( !UP3D_StartResumeProgram() ) return 9;
+    return 0;
+  }
+
+  /* method 0 */
+  UP3D_SetParameter( PARA_RED_BLUE_BLINK, 10 );
+  UP3D_SetParameter( PARA_PRINT_STATUS, 0x13 );   /* write to SD */
+  if( !UP3D_ClearProgramBuf() ) return 4;
+  const uint8_t program_id = 5;
+  if( !UP3D_UseSDProgramBuf( program_id, true ) ) return 5;
+  for( uint32_t i = 0; i < n; i += 72 )
+  {
+    uint32_t c = (n - i) > 72 ? 72 : (n - i);
+    if( !UP3D_WriteBlocks( blks + i, (uint8_t)c ) ) return 6;
+    if( progress ) progress( i + c, n );
+  }
+  /* the printer counts the blocks it has stored (param C6): wait up to 60 s for all of them */
+  uint32_t stored = 0, t0 = _ms_now(), lastmsg = t0;
+  for( ;; )
+  {
+    stored = UP3D_GetParameter( 0xC6 );
+    if( stored == n ) break;
+    if( _ms_now() - t0 > 60000 ) break;
+    if( _ms_now() - lastmsg > 5000 ) { printf( "Waiting for the printer to store the job: %u of %u blocks\n", stored, n ); fflush(stdout); lastmsg = _ms_now(); }
+    usleep( 100000 );
+  }
+  if( stored != n )
+  {
+    printf( "ERROR: the printer confirmed %u of %u blocks stored (param C6)\n", stored, n );
+    UP3D_SetParameter( PARA_RED_BLUE_BLINK, 0 );
+    UP3D_SetParameter( PARA_PRINT_STATUS, 0x1 );
+    return 7;
+  }
+  UP3D_SetParameter( PARA_RED_BLUE_BLINK, 0 );
+  UP3D_SetParameter( PARA_PRINT_STATUS, 0x1 );    /* system ready */
+  if( !UP3D_ClearProgramBuf() ) return 8;
+  if( !UP3D_UseSDProgramBuf( program_id, false ) ) return 8;
+  if( !UP3D_StartResumeProgram() ) return 9;
+  return 0;
+}
+
+/* Streams a program into the printer's program buffer and runs it while it is still
+   arriving (how UP Studio 3 sends moves to the UP300). The USB cable has to stay
+   connected until everything is sent. Returns 0, 4 (clear), 6 (write/no answer) or 9 (start). */
+int UP3D_StreamProgram( const UP3D_BLK *blks, uint32_t n, up3d_progress_fn progress )
+{
+  if( !UP3D_ClearProgramBuf() ) return 4;
+  bool started = false;
+  uint32_t i = 0, t_last = _ms_now(), t_beat = t_last;
+  while( i < n )
+  {
+    int64_t fb = _up3d_free_blocks();
+    if( fb < 0 )
+    {
+      if( _ms_now() - t_last > 5000 ) { printf("ERROR: the printer stopped answering\n"); return 6; }
+      usleep( 100000 );
+      continue;
+    }
+    if( fb == 0 )
+    {
+      if( !started ) { if( !UP3D_StartResumeProgram() ) return 9; started = true; }
+      if( _ms_now() - t_last > 20 * 60 * 1000 ) { printf("ERROR: the printer took no new data for 20 minutes\n"); return 6; }
+      if( _ms_now() - t_beat > 10000 ) { printf("Streaming: waiting for the printer (%u of %u blocks sent)\n", i, n); fflush(stdout); t_beat = _ms_now(); }
+      usleep( 200000 );
+      continue;
+    }
+    uint32_t c = (uint32_t)fb;
+    if( c > 72 ) c = 72;
+    if( c > n - i ) c = n - i;
+    if( !UP3D_WriteBlocks( blks + i, (uint8_t)c ) ) return 6;
+    i += c;
+    t_last = _ms_now();
+    if( progress ) progress( i, n );
+  }
+  if( !started && !UP3D_StartResumeProgram() ) return 9;
+  return 0;
 }

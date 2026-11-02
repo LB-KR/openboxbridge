@@ -27,7 +27,7 @@
 
 static void usage(void)
 {
-  printf("Usage: up3dctl box home | jog dx dy dz | extrude temp mm [mm/min] | withdraw temp mm  [--dry=file]\n");
+  printf("Usage: up3dctl box|up300 home | jog dx dy dz | extrude temp mm [mm/min] | withdraw temp mm  [--dry=file]\n");
   exit(2);
 }
 
@@ -42,32 +42,14 @@ static bool send_direct(UP3D_BLK *blks, long n)
   return UP3D_StartResumeProgram();
 }
 
-static bool send_sd(UP3D_BLK *blks, long n)
-{
-  UP3D_SetParameter(PARA_RED_BLUE_BLINK,10);
-  UP3D_SetParameter(PARA_PRINT_STATUS,0x13); //write to SD
-  if( !UP3D_ClearProgramBuf() ) return false;
-  uint8_t program_id = 5;
-  if( !UP3D_UseSDProgramBuf( program_id, true ) ) return false;
-  for( long i = 0; i < n; i += 72 )
-  {
-    long c = (n - i) > 72 ? 72 : (n - i);
-    if( !UP3D_WriteBlocks( blks + i, (uint8_t)c ) ) return false;
-  }
-  for( int w = 0; w < 100 && UP3D_GetParameter(0xC6) != (uint32_t)n; w++ )
-    usleep(50*1000);
-  if( UP3D_GetParameter(0xC6) != (uint32_t)n ) return false;
-  UP3D_SetParameter(PARA_RED_BLUE_BLINK,0);
-  UP3D_SetParameter(PARA_PRINT_STATUS,0x1);
-  if( !UP3D_ClearProgramBuf() ) return false;
-  if( !UP3D_UseSDProgramBuf( program_id, false ) ) return false;
-  return UP3D_StartResumeProgram();
-}
-
+static char mtype = 'b';
 int main(int argc, char *argv[])
 {
   if( argc < 3 ) usage();
-  memcpy( &settings, &settings_box, sizeof(settings) );
+  mtype = argv[1][0];
+  if( mtype == 'u' ) memcpy( &settings, &settings_up300, sizeof(settings) );   /* UP300 (experimental) */
+  else               memcpy( &settings, &settings_box, sizeof(settings) );
+  { const char *e = getenv("UP3D_ESTEPS"); if( e && atof(e) > 1.0 ) settings.steps_per_mm[2] = atof(e); }
 
   const char *dry = NULL;
   for( int i = 1; i < argc; i++ )
@@ -80,7 +62,7 @@ int main(int argc, char *argv[])
     const char *tmp = getenv("TEMP"); if( !tmp ) tmp = getenv("TMPDIR"); if( !tmp ) tmp = ".";
     snprintf(path, sizeof(path), "%s/up3dctl.umc", tmp);
   }
-  if( !umcwriter_open_raw( path, 'b' ) ) { printf("ERROR: cannot write %s\n", path); return 3; }
+  if( !umcwriter_open_raw( path, mtype == 'u' ? 'u' : 'b' ) ) { printf("ERROR: cannot write %s\n", path); return 3; }
 
   const char *cmd = argv[2];
   UP3D_BLK blk, b2[2];
@@ -150,7 +132,10 @@ int main(int argc, char *argv[])
 
   if( !UP3D_Open() ) return 5;
   if( !UP3D_IsPrinterResponsive() ) { printf("ERROR: UP printer is not responding\n"); UP3D_Close(); return 6; }
-  bool ok = (n <= 60) ? send_direct(blks, n) : send_sd(blks, n);
+  bool ok;
+  if( n <= 60 )        ok = send_direct(blks, n);
+  else if( mtype == 'u' ) ok = (0 == UP3D_StreamProgram(blks, (uint32_t)n, NULL));   /* UP300: run it while sending */
+  else                 ok = (0 == UP3D_SendProgramSD(blks, (uint32_t)n, 0, NULL));
   UP3D_Close();
   free(blks);
   if( !ok ) { printf("ERROR: could not send the command to the printer\n"); return 7; }

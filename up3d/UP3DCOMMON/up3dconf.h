@@ -64,6 +64,7 @@ extern settings_t settings;
 extern settings_t settings_mini;
 extern settings_t settings_classic_plus;
 extern settings_t settings_box;
+extern settings_t settings_up300;
 extern settings_t settings_cetus;
 
 
