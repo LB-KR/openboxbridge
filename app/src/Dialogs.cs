@@ -10,13 +10,35 @@ namespace OpenBoxBridge
     {
         public StyledDialog(string title, int w, int h)
         {
-            AutoScaleDimensions = new SizeF(96f, 96f);
-            AutoScaleMode = AutoScaleMode.Dpi;
+            // Laid out at 96 DPI and scaled once when shown (see OnLoad). WinForms' own DPI
+            // auto-scaling never ran for these code-built dialogs, so on a 150-175% display the
+            // text grew but the dialog and its buttons didn't, and everything was cut off.
+            AutoScaleMode = AutoScaleMode.None;
             Text = title; Font = Theme.Base; BackColor = Theme.Surface; ForeColor = Theme.Ink;
             ClientSize = new Size(w, h);
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
             StartPosition = FormStartPosition.CenterParent; ShowInTaskbar = false;
         }
+        bool scaled;
+        protected override void OnLoad(EventArgs e)
+        {
+            if (!scaled)
+            {
+                scaled = true;
+                float k = DeviceDpi / 96f;
+                if (k > 1.01f)
+                {
+                    Scale(new SizeF(k, k));
+                    var o = Owner;
+                    Rectangle area = o != null ? o.Bounds : Screen.FromControl(this).WorkingArea;
+                    var wa = Screen.FromRectangle(area).WorkingArea;
+                    int x = area.Left + (area.Width - Width) / 2, y = area.Top + (area.Height - Height) / 2;
+                    Location = new Point(Math.Max(wa.Left, Math.Min(x, wa.Right - Width)), Math.Max(wa.Top, Math.Min(y, wa.Bottom - Height)));
+                }
+            }
+            base.OnLoad(e);
+        }
+
         protected Lbl L(string text, int x, int y, int w, int h, Font f = null, Color? c = null)
         {
             var l = new Lbl(text, f ?? Theme.Base, c ?? Theme.Ink) { Location = new Point(x, y), Size = new Size(w, h) };
