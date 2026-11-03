@@ -551,9 +551,42 @@ index ffd3d48..f7851c8 100644
  extern settings_t settings_cetus;
  
  
+diff --git a/UP3DCOMMON/up3ddata.c b/UP3DCOMMON/up3ddata.c
+index f6b69b8..15d2cd1 100644
+--- a/UP3DCOMMON/up3ddata.c
++++ b/UP3DCOMMON/up3ddata.c
+@@ -68,8 +68,16 @@ void UP3D_PROG_BLK_Home( UP3D_BLK *pupblk, UP3D_AXIS axis, float direction, floa
+   pupblk->pdat3.f=offset*direction;
+ }
+ 
++/* UP300 (experimental): its firmware rejects jog moves that UP Box+ firmware accepts
++   ("JOG Command Error"). UP Studio 3 sends it jog speeds of 50 (X/Y) and 10 (Z), so when
++   these are set, jog speeds are limited to them (sign = absolute/relative is kept). */
++float up3d_movef_max_xy = 0, up3d_movef_max_z = 0;
++static float _lim( float v, float m ) { if( m <= 0 ) return v; if( v > m ) return m; if( v < -m ) return -m; return v; }
++
+ void UP3D_PROG_BLK_MoveF( UP3D_BLK pupblks[2], float speedX, float posX, float speedY, float posY, float speedZ, float posZ, float speedA, float posA )
+ {
++  speedX = _lim( speedX, up3d_movef_max_xy ); speedY = _lim( speedY, up3d_movef_max_xy );
++  speedZ = _lim( speedZ, up3d_movef_max_z );  speedA = _lim( speedA, up3d_movef_max_xy );
+   memset( pupblks, 0, sizeof(UP3D_BLK)*2 );
+   pupblks[0].pcmd=UP3DPCMD_MoveF; pupblks[0].pdat1.f=speedX; pupblks[0].pdat2.f=posX; pupblks[0].pdat3.f=speedY; pupblks[0].pdat4.f=posY;
+   pupblks[1].pcmd=UP3DPCMD_MoveF; pupblks[1].pdat1.f=speedZ; pupblks[1].pdat2.f=posZ; pupblks[1].pdat3.f=speedA; pupblks[1].pdat4.f=posA;
+diff --git a/UP3DCOMMON/up3ddata.h b/UP3DCOMMON/up3ddata.h
+index d342af1..50ccd0a 100644
+--- a/UP3DCOMMON/up3ddata.h
++++ b/UP3DCOMMON/up3ddata.h
+@@ -349,6 +349,7 @@ void UP3D_PROG_BLK_Beeper( UP3D_BLK *pupblk, bool on );
+ void UP3D_PROG_BLK_Pause( UP3D_BLK *pupblk, uint32_t msec );
+ void UP3D_PROG_BLK_SetParameter( UP3D_BLK *pupblk, uint8_t parameter, int32_t value );
+ void UP3D_PROG_BLK_Home( UP3D_BLK pupblks[2], UP3D_AXIS axis, float direction, float offset, float speed );
++extern float up3d_movef_max_xy, up3d_movef_max_z;   /* UP300: jog speed limits (0 = none) */
+ void UP3D_PROG_BLK_MoveF( UP3D_BLK pupblks[2], float speedX, float posX, float speedY, float posY, float speedZ, float posZ, float speedA, float posA );
+ void UP3D_PROG_BLK_MoveL( UP3D_BLK *pupblk, uint16_t p1, uint16_t p2, int16_t p3, int16_t p4, int16_t p5, int16_t p6, int16_t p7, int16_t p8);
+ void UP3D_PROG_BLK_WaitIfNot( UP3D_BLK *pupblk, uint8_t parameter, int32_t value, char compchar );
 diff --git a/UP3DTOOLS/upcenter.c b/UP3DTOOLS/upcenter.c
 new file mode 100644
-index 0000000..3ca8cbf
+index 0000000..c1ee9b5
 --- /dev/null
 +++ b/UP3DTOOLS/upcenter.c
 @@ -0,0 +1,218 @@
@@ -670,7 +703,7 @@ index 0000000..3ca8cbf
 +    case 'm': memcpy(&settings,&settings_mini,sizeof(settings)); break;
 +    case 'c': case 'p': memcpy(&settings,&settings_classic_plus,sizeof(settings)); break;
 +    case 'C': memcpy(&settings,&settings_cetus,sizeof(settings)); break;
-+    case 'u': memcpy(&settings,&settings_up300,sizeof(settings)); break;
++    case 'u': memcpy(&settings,&settings_up300,sizeof(settings)); up3d_movef_max_xy = 50; up3d_movef_max_z = 10; break;
 +    default:  memcpy(&settings,&settings_box,sizeof(settings)); break;
 +  }
 +
@@ -777,7 +810,7 @@ index 0000000..3ca8cbf
 +}
 diff --git a/UP3DTOOLS/upctl.c b/UP3DTOOLS/upctl.c
 new file mode 100644
-index 0000000..0fddce3
+index 0000000..5aa2a04
 --- /dev/null
 +++ b/UP3DTOOLS/upctl.c
 @@ -0,0 +1,144 @@
@@ -830,7 +863,7 @@ index 0000000..0fddce3
 +{
 +  if( argc < 3 ) usage();
 +  mtype = argv[1][0];
-+  if( mtype == 'u' ) memcpy( &settings, &settings_up300, sizeof(settings) );   /* UP300 (experimental) */
++  if( mtype == 'u' ) { memcpy( &settings, &settings_up300, sizeof(settings) ); up3d_movef_max_xy = 50; up3d_movef_max_z = 10; }   /* UP300 (experimental) */
 +  else               memcpy( &settings, &settings_box, sizeof(settings) );
 +  { const char *e = getenv("UP3D_ESTEPS"); if( e && atof(e) > 1.0 ) settings.steps_per_mm[2] = atof(e); }
 +
@@ -1785,10 +1818,10 @@ index f26c975..1f592bb 100644
    //==> tmax = 65535*65535 / 50000000 = 85.8 sec. per segment
    int64_t p1 = 1+(int64_t)(t*F_CPU)/65535;
 diff --git a/UP3DTRANSCODE/umcwriter.c b/UP3DTRANSCODE/umcwriter.c
-index 8f11f1f..96fcd8e 100644
+index 8f11f1f..d8faa11 100644
 --- a/UP3DTRANSCODE/umcwriter.c
 +++ b/UP3DTRANSCODE/umcwriter.c
-@@ -26,6 +26,7 @@
+@@ -26,12 +26,14 @@
  #include <stdbool.h>
  #include <stdio.h>
  #include <math.h>
@@ -1796,7 +1829,14 @@ index 8f11f1f..96fcd8e 100644
  
  static FILE*   umcwriter_file;
  static double  umcwriter_Z;
-@@ -42,8 +43,12 @@ static int _umcwriter_write_file(UP3D_BLK* pblks, uint32_t blks )
+ static double  umcwriter_Z_height;
+ static double  umcwriter_print_time;
+ static char    umcwriter_machine_type;
++int            umcwriter_up300_outside = 0;   /* moves outside the UP300's X/Y range */
+ static int32_t umcwriter_bed_temp;
+ 
+ static int _umcwriter_write_file(UP3D_BLK* pblks, uint32_t blks )
+@@ -42,8 +44,12 @@ static int _umcwriter_write_file(UP3D_BLK* pblks, uint32_t blks )
      return 0;
  }
  
@@ -1809,7 +1849,7 @@ index 8f11f1f..96fcd8e 100644
    umcwriter_Z = 0;
    umcwriter_Z_height = heightZ;
    umcwriter_print_time = 0;
-@@ -130,6 +135,36 @@ bool umcwriter_init(const char* filename, const double heightZ, const char machi
+@@ -130,6 +136,36 @@ bool umcwriter_init(const char* filename, const double heightZ, const char machi
    return true;
  }
  
@@ -1846,7 +1886,23 @@ index 8f11f1f..96fcd8e 100644
  void umcwriter_finish(bool power_off)
  {
    umcwriter_planner_sync();
-@@ -261,14 +296,19 @@ void umcwriter_virtual_home(double speedX, double speedY, double speedZ)
+@@ -248,6 +284,15 @@ void umcwriter_virtual_home(double speedX, double speedY, double speedZ)
+ {
+   umcwriter_planner_sync();
+ 
++  /* UP300: a jog to machine 0,0 is outside its X/Y limits (6..213, -262..-3) and the
++     printer stops with "JOG Command Error". Home the requested axes for real instead. */
++  if( 'u' == umcwriter_machine_type )
++  {
++    if( speedX > 0 || speedY > 0 ) { umcwriter_home(0); umcwriter_home(1); }
++    if( speedZ > 0 ) umcwriter_home(2);
++    return;
++  }
++
+   umcwriter_print_time += 5; //apx. 5 seconds for virtual homeing
+ 
+   double speed[2];
+@@ -261,14 +306,19 @@ void umcwriter_virtual_home(double speedX, double speedY, double speedZ)
    umcwriter_planner_set_position(0,0,0);
  }
  
@@ -1870,7 +1926,7 @@ index 8f11f1f..96fcd8e 100644
  
    double pos[3];
    plan_get_position(pos);
-@@ -276,12 +316,12 @@ void umcwriter_move_direct(double X, double Y, double Z, double A, double F)
+@@ -276,12 +326,12 @@ void umcwriter_move_direct(double X, double Y, double Z, double A, double F)
  
    double tX = fabs(X+pos[1])/feedX;
    double tY = fabs(Y-pos[0])/feedY;
@@ -1885,7 +1941,28 @@ index 8f11f1f..96fcd8e 100644
  
    double topos[2];
    topos[settings.x_axes] = X * settings.x_dir;
-@@ -315,6 +355,122 @@ void umcwriter_planner_set_a_position(double A)
+@@ -291,8 +341,19 @@ void umcwriter_move_direct(double X, double Y, double Z, double A, double F)
+   feed[settings.x_axes] = feedX;
+   feed[settings.y_axes] = feedY;
+ 
++  double sx = -feed[0], sy = -feed[1];          /* negative speed = absolute target */
++  if( 'u' == umcwriter_machine_type )
++  {
++    /* UP300: an axis that doesn't move is sent as a relative move of 0, so a Z-only move
++       right after homing doesn't ask for machine 0, which is outside its X/Y limits */
++    if( fabs(topos[0] - pos[0]) < 1e-6 ) { sx = feed[0]; topos[0] = 0; }
++    if( fabs(topos[1] - pos[1]) < 1e-6 ) { sy = feed[1]; topos[1] = 0; }
++    if( (sx < 0 && (topos[0] < 6.0 || topos[0] > 213.0)) || (sy < 0 && (topos[1] < -262.0 || topos[1] > -3.0)) )
++      umcwriter_up300_outside++;
++  }
++
+   UP3D_BLK blks[2];
+-  UP3D_PROG_BLK_MoveF( blks,-feed[0],topos[0],-feed[1],topos[1],-feedZ,-(umcwriter_Z_height-Z),feedA,relA );
++  UP3D_PROG_BLK_MoveF( blks,sx,topos[0],sy,topos[1],-feedZ,-(umcwriter_Z_height-Z),feedA,relA );
+   _umcwriter_write_file(blks, 2);
+ 
+   umcwriter_planner_set_position(X,Y,A);
+@@ -315,6 +376,122 @@ void umcwriter_planner_set_a_position(double A)
    plan_set_e_position(A);
  }
  
@@ -2008,7 +2085,7 @@ index 8f11f1f..96fcd8e 100644
  void umcwriter_planner_add(double X, double Y, double A, double F)
  {
    while( plan_check_full_buffer() )
-@@ -322,9 +478,8 @@ void umcwriter_planner_add(double X, double Y, double A, double F)
+@@ -322,9 +499,8 @@ void umcwriter_planner_add(double X, double Y, double A, double F)
      segment_up3d_t *pseg;
      if( !st_get_next_segment_up3d(&pseg) )
        break;
@@ -2020,7 +2097,7 @@ index 8f11f1f..96fcd8e 100644
    }
  
    double pos[3];
-@@ -332,6 +487,7 @@ void umcwriter_planner_add(double X, double Y, double A, double F)
+@@ -332,6 +508,7 @@ void umcwriter_planner_add(double X, double Y, double A, double F)
    pos[settings.y_axes] = Y * settings.y_dir;
    pos[2] = A;
    double feed = F/60;
@@ -2028,7 +2105,7 @@ index 8f11f1f..96fcd8e 100644
    plan_buffer_line( pos, feed, false);
  }
  
-@@ -344,9 +500,7 @@ void umcwriter_planner_sync()
+@@ -344,9 +521,7 @@ void umcwriter_planner_sync()
      {
        umcwriter_print_time += ((double)pseg->p2*(double)pseg->p1)/F_CPU;
  
@@ -2039,7 +2116,7 @@ index 8f11f1f..96fcd8e 100644
      }
      
      if( 0 == plan_get_block_buffer_count() )
-@@ -409,7 +563,9 @@ void umcwriter_set_bed_temp(int32_t temp, bool wait)
+@@ -409,7 +584,9 @@ void umcwriter_set_bed_temp(int32_t temp, bool wait)
  
    UP3D_PROG_BLK_SetParameter(&blk,PARA_BED_TEMP,temp);
    _umcwriter_write_file(&blk, 1);
@@ -2051,10 +2128,10 @@ index 8f11f1f..96fcd8e 100644
  
    if(wait && (temp>umcwriter_bed_temp) ) //only wait if new temperature is higher
 diff --git a/UP3DTRANSCODE/umcwriter.h b/UP3DTRANSCODE/umcwriter.h
-index fc5e702..de8a99c 100644
+index fc5e702..d3c3b04 100644
 --- a/UP3DTRANSCODE/umcwriter.h
 +++ b/UP3DTRANSCODE/umcwriter.h
-@@ -21,9 +21,13 @@
+@@ -21,11 +21,16 @@
  
  #include <stdint.h>
  #include <stdbool.h>
@@ -2067,9 +2144,12 @@ index fc5e702..de8a99c 100644
 +void    umcwriter_close_raw();
  int32_t umcwriter_get_print_time();
  void    umcwriter_home(int32_t axes);
++extern int umcwriter_up300_outside;
  void    umcwriter_virtual_home(double speedX, double speedY,double speedZ);
+ void    umcwriter_move_direct(double X, double Y, double Z, double A, double F);
+ void    umcwriter_planner_set_position(double X, double Y, double A);
 diff --git a/UP3DTRANSCODE/up3dtranscode.c b/UP3DTRANSCODE/up3dtranscode.c
-index 9fd544e..1b712cf 100644
+index 9fd544e..02918b4 100644
 --- a/UP3DTRANSCODE/up3dtranscode.c
 +++ b/UP3DTRANSCODE/up3dtranscode.c
 @@ -30,22 +30,24 @@
@@ -2102,17 +2182,18 @@ index 9fd544e..1b712cf 100644
      print_usage_and_exit();
  
    switch( argv[1][0] )
-@@ -62,6 +64,9 @@ int main(int argc, char *argv[])
+@@ -62,6 +64,10 @@ int main(int argc, char *argv[])
      case 'b': //box
        memcpy( &settings, &settings_box, sizeof(settings) );
        break;
 +    case 'u': //up300 (experimental)
 +      memcpy( &settings, &settings_up300, sizeof(settings) );
++      up3d_movef_max_xy = 50; up3d_movef_max_z = 10;
 +      break;
        
      case 'C': //cetus  
        memcpy( &settings, &settings_cetus, sizeof(settings) );
-@@ -72,6 +77,10 @@ int main(int argc, char *argv[])
+@@ -72,6 +78,10 @@ int main(int argc, char *argv[])
        printf("ERROR: Uknown machine type: %s\n\n",argv[1] );
        print_usage_and_exit();
    }
@@ -2123,7 +2204,7 @@ index 9fd544e..1b712cf 100644
    
    if (6 <= argc)
    {
-@@ -115,6 +124,21 @@ int main(int argc, char *argv[])
+@@ -115,6 +125,21 @@ int main(int argc, char *argv[])
      //printf(";use junction %.5f\n", junction);
    }
    
@@ -2145,7 +2226,7 @@ index 9fd544e..1b712cf 100644
    double nozzle_height;
    if( 1 != sscanf(argv[4],"%lf", &nozzle_height) )
    {
-@@ -136,11 +160,17 @@ int main(int argc, char *argv[])
+@@ -136,13 +161,21 @@ int main(int argc, char *argv[])
    }
  
    gcp_reset();
@@ -2163,8 +2244,12 @@ index 9fd544e..1b712cf 100644
 +    }
  
    umcwriter_finish(power_off);
++  if( umcwriter_up300_outside )
++    printf("WARNING: %d moves go outside the UP300's X/Y range - check Find bed centre\n", umcwriter_up300_outside);
    int32_t print_time = umcwriter_get_print_time();
-@@ -152,6 +182,7 @@ int main(int argc, char *argv[])
+ 
+   fclose( fgcode );
+@@ -152,6 +185,7 @@ int main(int argc, char *argv[])
    int m = print_time/60; printf("%02dm:",m); print_time -= m*60;
    printf("%02ds",print_time);
    printf(" / Nozzle Height: %.2fmm\n", nozzle_height);

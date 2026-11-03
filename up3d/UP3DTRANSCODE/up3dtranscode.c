@@ -66,6 +66,7 @@ int main(int argc, char *argv[])
       break;
     case 'u': //up300 (experimental)
       memcpy( &settings, &settings_up300, sizeof(settings) );
+      up3d_movef_max_xy = 50; up3d_movef_max_z = 10;
       break;
       
     case 'C': //cetus  
@@ -173,6 +174,8 @@ int main(int argc, char *argv[])
     }
 
   umcwriter_finish(power_off);
+  if( umcwriter_up300_outside )
+    printf("WARNING: %d moves go outside the UP300's X/Y range - check Find bed centre\n", umcwriter_up300_outside);
   int32_t print_time = umcwriter_get_print_time();
 
   fclose( fgcode );

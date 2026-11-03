@@ -30,6 +30,7 @@ void    umcwriter_write_raw(UP3D_BLK* pblks, uint32_t blks);
 void    umcwriter_close_raw();
 int32_t umcwriter_get_print_time();
 void    umcwriter_home(int32_t axes);
+extern int umcwriter_up300_outside;
 void    umcwriter_virtual_home(double speedX, double speedY,double speedZ);
 void    umcwriter_move_direct(double X, double Y, double Z, double A, double F);
 void    umcwriter_planner_set_position(double X, double Y, double A);

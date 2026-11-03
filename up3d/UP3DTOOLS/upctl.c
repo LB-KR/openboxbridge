@@ -47,7 +47,7 @@ int main(int argc, char *argv[])
 {
   if( argc < 3 ) usage();
   mtype = argv[1][0];
-  if( mtype == 'u' ) memcpy( &settings, &settings_up300, sizeof(settings) );   /* UP300 (experimental) */
+  if( mtype == 'u' ) { memcpy( &settings, &settings_up300, sizeof(settings) ); up3d_movef_max_xy = 50; up3d_movef_max_z = 10; }   /* UP300 (experimental) */
   else               memcpy( &settings, &settings_box, sizeof(settings) );
   { const char *e = getenv("UP3D_ESTEPS"); if( e && atof(e) > 1.0 ) settings.steps_per_mm[2] = atof(e); }
 

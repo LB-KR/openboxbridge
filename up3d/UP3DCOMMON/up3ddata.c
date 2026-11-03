@@ -68,8 +68,16 @@ void UP3D_PROG_BLK_Home( UP3D_BLK *pupblk, UP3D_AXIS axis, float direction, floa
   pupblk->pdat3.f=offset*direction;
 }
 
+/* UP300 (experimental): its firmware rejects jog moves that UP Box+ firmware accepts
+   ("JOG Command Error"). UP Studio 3 sends it jog speeds of 50 (X/Y) and 10 (Z), so when
+   these are set, jog speeds are limited to them (sign = absolute/relative is kept). */
+float up3d_movef_max_xy = 0, up3d_movef_max_z = 0;
+static float _lim( float v, float m ) { if( m <= 0 ) return v; if( v > m ) return m; if( v < -m ) return -m; return v; }
+
 void UP3D_PROG_BLK_MoveF( UP3D_BLK pupblks[2], float speedX, float posX, float speedY, float posY, float speedZ, float posZ, float speedA, float posA )
 {
+  speedX = _lim( speedX, up3d_movef_max_xy ); speedY = _lim( speedY, up3d_movef_max_xy );
+  speedZ = _lim( speedZ, up3d_movef_max_z );  speedA = _lim( speedA, up3d_movef_max_xy );
   memset( pupblks, 0, sizeof(UP3D_BLK)*2 );
   pupblks[0].pcmd=UP3DPCMD_MoveF; pupblks[0].pdat1.f=speedX; pupblks[0].pdat2.f=posX; pupblks[0].pdat3.f=speedY; pupblks[0].pdat4.f=posY;
   pupblks[1].pcmd=UP3DPCMD_MoveF; pupblks[1].pdat1.f=speedZ; pupblks[1].pdat2.f=posZ; pupblks[1].pdat3.f=speedA; pupblks[1].pdat4.f=posA;

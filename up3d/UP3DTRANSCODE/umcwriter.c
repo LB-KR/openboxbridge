@@ -33,6 +33,7 @@ static double  umcwriter_Z;
 static double  umcwriter_Z_height;
 static double  umcwriter_print_time;
 static char    umcwriter_machine_type;
+int            umcwriter_up300_outside = 0;   /* moves outside the UP300's X/Y range */
 static int32_t umcwriter_bed_temp;
 
 static int _umcwriter_write_file(UP3D_BLK* pblks, uint32_t blks )
@@ -283,6 +284,15 @@ void umcwriter_virtual_home(double speedX, double speedY, double speedZ)
 {
   umcwriter_planner_sync();
 
+  /* UP300: a jog to machine 0,0 is outside its X/Y limits (6..213, -262..-3) and the
+     printer stops with "JOG Command Error". Home the requested axes for real instead. */
+  if( 'u' == umcwriter_machine_type )
+  {
+    if( speedX > 0 || speedY > 0 ) { umcwriter_home(0); umcwriter_home(1); }
+    if( speedZ > 0 ) umcwriter_home(2);
+    return;
+  }
+
   umcwriter_print_time += 5; //apx. 5 seconds for virtual homeing
 
   double speed[2];
@@ -331,8 +341,19 @@ void umcwriter_move_direct(double X, double Y, double Z, double A, double F)
   feed[settings.x_axes] = feedX;
   feed[settings.y_axes] = feedY;
 
+  double sx = -feed[0], sy = -feed[1];          /* negative speed = absolute target */
+  if( 'u' == umcwriter_machine_type )
+  {
+    /* UP300: an axis that doesn't move is sent as a relative move of 0, so a Z-only move
+       right after homing doesn't ask for machine 0, which is outside its X/Y limits */
+    if( fabs(topos[0] - pos[0]) < 1e-6 ) { sx = feed[0]; topos[0] = 0; }
+    if( fabs(topos[1] - pos[1]) < 1e-6 ) { sy = feed[1]; topos[1] = 0; }
+    if( (sx < 0 && (topos[0] < 6.0 || topos[0] > 213.0)) || (sy < 0 && (topos[1] < -262.0 || topos[1] > -3.0)) )
+      umcwriter_up300_outside++;
+  }
+
   UP3D_BLK blks[2];
-  UP3D_PROG_BLK_MoveF( blks,-feed[0],topos[0],-feed[1],topos[1],-feedZ,-(umcwriter_Z_height-Z),feedA,relA );
+  UP3D_PROG_BLK_MoveF( blks,sx,topos[0],sy,topos[1],-feedZ,-(umcwriter_Z_height-Z),feedA,relA );
   _umcwriter_write_file(blks, 2);
 
   umcwriter_planner_set_position(X,Y,A);

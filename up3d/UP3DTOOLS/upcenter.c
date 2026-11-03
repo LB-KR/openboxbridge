@@ -111,7 +111,7 @@ int main(int argc, char *argv[])
     case 'm': memcpy(&settings,&settings_mini,sizeof(settings)); break;
     case 'c': case 'p': memcpy(&settings,&settings_classic_plus,sizeof(settings)); break;
     case 'C': memcpy(&settings,&settings_cetus,sizeof(settings)); break;
-    case 'u': memcpy(&settings,&settings_up300,sizeof(settings)); break;
+    case 'u': memcpy(&settings,&settings_up300,sizeof(settings)); up3d_movef_max_xy = 50; up3d_movef_max_z = 10; break;
     default:  memcpy(&settings,&settings_box,sizeof(settings)); break;
   }
 
