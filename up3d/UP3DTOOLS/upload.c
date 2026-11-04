@@ -36,7 +36,8 @@ static void progress(uint32_t sent, uint32_t total)
 int main(int argc, char const *argv[])
 {
   const char *file = NULL;
-  int method = -1;   /* -1 = automatic: UP3D's way, then UP Studio's if the printer doesn't confirm */
+  int method = -1;   /* -1 = automatic: UP Box+ = UP3D's way, then UP Studio's if the printer doesn't
+                        confirm; UP300 = stream (it reads stored jobs from its SD card and fails) */
   for( int i = 1; i < argc; i++ )
   {
     if( !strncmp(argv[i], "--method=", 9) ) method = atoi(argv[i] + 9);
@@ -48,7 +49,8 @@ int main(int argc, char const *argv[])
     printf("  --method=0  UP3D's way of storing the job (SD slot 5, block counter check)\n");
     printf("  --method=1  UP Studio's way (program buffer committed to slot 9)\n");
     printf("  --method=2  stream it while it prints (USB must stay connected until the end)\n");
-    printf("  default     method 0, then method 1 if the printer doesn't confirm the job\n");
+    printf("  default     UP Box+: method 0, then method 1 if the printer doesn't confirm the job\n");
+    printf("              UP300:   method 2\n");
     return 0;
   }
 
@@ -77,6 +79,13 @@ int main(int argc, char const *argv[])
   printf("Printer model id %04X (USB product %04X)%s\n", model, UP3DCOMM_GetPID(), model == 0x2783 ? " - UP300 (experimental)" : "");
   printf("Job: %u blocks\n", n);
   fflush(stdout);
+
+  if( method < 0 && (model == 0x2783 || UP3DCOMM_GetPID() == 0x2790) )
+  {
+    printf("UP300: streaming the job (stored jobs give 'SD Card Reading Error' on this printer)\n");
+    fflush(stdout);
+    method = 2;
+  }
 
   gettimeofday(&tval_start, NULL);
   int r = (method == 2) ? UP3D_StreamProgram( blks, n, progress )

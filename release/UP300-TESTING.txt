@@ -1,5 +1,5 @@
-OpenBoxBridge 1.1 - UP300 TEST VERSION
-=======================================
+OpenBoxBridge 1.1 - UP300 TEST VERSION (test 4)
+================================================
 
 Thanks for testing! UP300 support is new and has only been worked out from your USB
 recordings, never on a real UP300. Please go through these steps IN ORDER and stop at
@@ -33,7 +33,7 @@ Please send both files. They only contain printer settings and model information
 --------------------------
 Run OpenBoxBridge.exe. It should show a message that a UP300 is connected.
 Setup page > Check printer: it should say "UP300 - experimental support" and show
-  Steps/mm X 161  Y 161  Z 805.
+  Steps/mm X 161  Y 161  Z 805  (also written to the Console page).
 The Dashboard should show the nozzle and bed temperatures. Check they look right.
 
 
@@ -46,18 +46,21 @@ uses). This is the safest first movement test.
 4. HOME AND JOG (no heat)
 -------------------------
 Dashboard > Control: the house button in the middle of the arrows homes X, Y and Z like a
-normal start. Then set Step (mm) to 10, press X+ once and measure how far the head actually moved (a ruler against the
-frame is fine). Then the same for Y.
+normal start. Then set Step (mm) to 10, press X- once and measure how far the head actually
+moved (a ruler against the frame is fine). Then the same with Y-.
   Expected: 10 mm. If it moves 2.5 mm or 40 mm instead, stop and tell me.
-Also note whether +X / +Y move the way you expect.
+After homing the head sits in a corner, just outside the UP300's travel, so only X- and Y-
+work at first (with "Turn prints 180°" ticked). The app now refuses a move the printer
+would reject, and says so in the Console, instead of the printer showing "JOG Command Error".
 
 
 5. BED CENTRE AND NOZZLE HEIGHT (no heat)
 -----------------------------------------
 Setup > Find bed centre... then Calibrate...
 The nozzle-height calibration raises the bed. On the UP300 the "Fast" button stops at
-150 mm so it can't reach your modified build plate; after that use 5 mm, then 1 mm,
-then 0.1 mm steps until a sheet of paper just drags under the nozzle.
+150 mm so it can't reach your modified build plate. New in test 4: type a height in the box
+under it (e.g. 225) and press "Go to mm", then 1 mm, then 0.1 mm steps until a sheet of
+paper just drags under the nozzle. Once a height is saved, Go to mm stops 1 mm short of it.
 Please tell me the number it measures.
 
 
@@ -67,16 +70,14 @@ This checks the part I'm least sure about: sending a whole job to the printer.
 Open  tests\STOP test (no heat).gcode  in the app (Open G-code..., or drag it onto the window)
 and press Print. It only moves the head in the air.
 Setup > UP300 section > "Sending a job" should be on Automatic for this test.
-The app tries two ways of storing the job on the printer. Possible results:
-  a) It says "Sent" and the head starts moving: great. Press STOP in the app after a
-     few seconds and check the head stops.
-  b) It says the UP300 didn't accept the job as a stored print, and offers to STREAM it:
-     say Yes. The head should start moving while it's still being sent. You can't stop
-     it from the app in this mode - use the printer's button.
-  c) Something else: send me the Console text.
-If a) or b) didn't work, you can also try each method on its own with the same test file:
-"Stored - UP3D method", "Stored - UP Studio method" and "Stream while printing".
-Tell me which ones worked.
+Test 2 showed the UP300 can't run a job stored the UP Box+ way ("SD Card Reading Error",
+then "JOG Command Error"). So on the UP300, Automatic now STREAMS the job: it is sent
+while it runs, the same way the home and jog moves are sent (and those work).
+  - The app asks first; say Yes. The head should home, then draw squares in the air.
+  - Keep the USB cable and PC connected until it's done. The app can't stop it while it
+    streams - use the printer's own button (or wait, it lasts about 8 minutes).
+  - Tell me: did it home and draw squares, did anything show on the printer's screen,
+    and send the Console text.
 
 
 7. EXTRUDER TEST (heats the nozzle)

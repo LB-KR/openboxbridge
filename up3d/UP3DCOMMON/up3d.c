@@ -735,7 +735,8 @@ int UP3D_StreamProgram( const UP3D_BLK *blks, uint32_t n, up3d_progress_fn progr
     if( fb == 0 )
     {
       if( !started ) { if( !UP3D_StartResumeProgram() ) return 9; started = true; }
-      if( _ms_now() - t_last > 20 * 60 * 1000 ) { printf("ERROR: the printer took no new data for 20 minutes\n"); return 6; }
+      /* long enough for heating the bed from cold before the first layer */
+      if( _ms_now() - t_last > 45 * 60 * 1000 ) { printf("ERROR: the printer took no new data for 45 minutes\n"); return 6; }
       if( _ms_now() - t_beat > 10000 ) { printf("Streaming: waiting for the printer (%u of %u blocks sent)\n", i, n); fflush(stdout); t_beat = _ms_now(); }
       usleep( 200000 );
       continue;

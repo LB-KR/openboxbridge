@@ -1,5 +1,5 @@
 diff --git a/UP3DCOMMON/up3d.c b/UP3DCOMMON/up3d.c
-index 5ae7751..6c95150 100644
+index 5ae7751..0af8efe 100644
 --- a/UP3DCOMMON/up3d.c
 +++ b/UP3DCOMMON/up3d.c
 @@ -11,6 +11,8 @@
@@ -176,7 +176,7 @@ index 5ae7751..6c95150 100644
  }
  
  ///////////////////////////////////////////
-@@ -542,3 +600,154 @@ bool UP3D_GetPrinterStatus(TT_tagPrinterStatus *status)
+@@ -542,3 +600,155 @@ bool UP3D_GetPrinterStatus(TT_tagPrinterStatus *status)
    status->UnkMinusOne = htole64((int64_t)-1);
    return true;
  }
@@ -315,7 +315,8 @@ index 5ae7751..6c95150 100644
 +    if( fb == 0 )
 +    {
 +      if( !started ) { if( !UP3D_StartResumeProgram() ) return 9; started = true; }
-+      if( _ms_now() - t_last > 20 * 60 * 1000 ) { printf("ERROR: the printer took no new data for 20 minutes\n"); return 6; }
++      /* long enough for heating the bed from cold before the first layer */
++      if( _ms_now() - t_last > 45 * 60 * 1000 ) { printf("ERROR: the printer took no new data for 45 minutes\n"); return 6; }
 +      if( _ms_now() - t_beat > 10000 ) { printf("Streaming: waiting for the printer (%u of %u blocks sent)\n", i, n); fflush(stdout); t_beat = _ms_now(); }
 +      usleep( 200000 );
 +      continue;
@@ -959,7 +960,7 @@ index 0000000..5aa2a04
 +  return 0;
 +}
 diff --git a/UP3DTOOLS/upload.c b/UP3DTOOLS/upload.c
-index 9017101..1eaed95 100644
+index 9017101..6c01d77 100644
 --- a/UP3DTOOLS/upload.c
 +++ b/UP3DTOOLS/upload.c
 @@ -1,6 +1,8 @@
@@ -971,7 +972,7 @@ index 9017101..1eaed95 100644
  
  #include <stdlib.h>
  #include <stdio.h>
-@@ -12,134 +14,96 @@
+@@ -12,134 +14,105 @@
  #include <sys/time.h>
  
  #include "up3d.h"
@@ -998,7 +999,8 @@ index 9017101..1eaed95 100644
  {
 -  if( argc != 2 )
 +  const char *file = NULL;
-+  int method = -1;   /* -1 = automatic: UP3D's way, then UP Studio's if the printer doesn't confirm */
++  int method = -1;   /* -1 = automatic: UP Box+ = UP3D's way, then UP Studio's if the printer doesn't
++                        confirm; UP300 = stream (it reads stored jobs from its SD card and fails) */
 +  for( int i = 1; i < argc; i++ )
 +  {
 +    if( !strncmp(argv[i], "--method=", 9) ) method = atoi(argv[i] + 9);
@@ -1011,7 +1013,8 @@ index 9017101..1eaed95 100644
 +    printf("  --method=0  UP3D's way of storing the job (SD slot 5, block counter check)\n");
 +    printf("  --method=1  UP Studio's way (program buffer committed to slot 9)\n");
 +    printf("  --method=2  stream it while it prints (USB must stay connected until the end)\n");
-+    printf("  default     method 0, then method 1 if the printer doesn't confirm the job\n");
++    printf("  default     UP Box+: method 0, then method 1 if the printer doesn't confirm the job\n");
++    printf("              UP300:   method 2\n");
      return 0;
    }
  
@@ -1039,11 +1042,16 @@ index 9017101..1eaed95 100644
    }
 -  
 -  UP3D_SetParameter(PARA_RED_BLUE_BLINK,10);
--
+ 
 -  UP3D_SetParameter(PARA_PRINT_STATUS,0x13); //write to SD
--
++  uint32_t model = UP3D_GetPrinterModelId();
++  printf("Printer model id %04X (USB product %04X)%s\n", model, UP3DCOMM_GetPID(), model == 0x2783 ? " - UP300 (experimental)" : "");
++  printf("Job: %u blocks\n", n);
++  fflush(stdout);
+ 
 -  if( !UP3D_ClearProgramBuf() )
--  {
++  if( method < 0 && (model == 0x2783 || UP3DCOMM_GetPID() == 0x2790) )
+   {
 -    upl_error( "ClearProgramBuf failed\n" );
 -    UP3D_Close();
 -    return 4;
@@ -1058,17 +1066,16 @@ index 9017101..1eaed95 100644
 -    upl_error( "UseSDProgramBuf failed\n" );
 -    UP3D_Close();
 -    return 5;
--  }
++    printf("UP300: streaming the job (stored jobs give 'SD Card Reading Error' on this printer)\n");
++    fflush(stdout);
++    method = 2;
+   }
  
 -  int64_t fpos = 0;
 -  fseek(fdat, 0, SEEK_END);
 -  int64_t flen = ftell(fdat);
 -  fseek(fdat, 0, SEEK_SET);
-+  uint32_t model = UP3D_GetPrinterModelId();
-+  printf("Printer model id %04X (USB product %04X)%s\n", model, UP3DCOMM_GetPID(), model == 0x2783 ? " - UP300 (experimental)" : "");
-+  printf("Job: %u blocks\n", n);
-+  fflush(stdout);
- 
+-
 -  struct timeval tval_start, tval_now, tval_diff;
    gettimeofday(&tval_start, NULL);
 -  int64_t usecs = 1;
@@ -1113,8 +1120,7 @@ index 9017101..1eaed95 100644
 -  }
 -  
 -  if( UP3D_GetParameter(0xC6) != tblocks )
-+  if( r == 7 && method < 0 )
-   {
+-  {
 -    upl_error("Write to SD not finished");
 -    UP3D_Close();
 -    return 7;
@@ -1127,7 +1133,8 @@ index 9017101..1eaed95 100644
 -//  UP3D_SetPrintJobInfo( program_id, 0, 0 );
 -
 -  if( !UP3D_ClearProgramBuf() )
--  {
++  if( r == 7 && method < 0 )
+   {
 -    upl_error( "ClearProgramBuf failed\n" );
 -    UP3D_Close();
 -    return 8;

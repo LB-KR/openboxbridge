@@ -545,7 +545,7 @@ namespace OpenBoxBridge
             cmbUp300Send = C(u3, 150, 92, 300, Up300SendModes.Keys, Up300SendModes.ContainsKey(S.GetS("Up300Send")) ? S.GetS("Up300Send") : "Automatic");
             cmbUp300Send.SelectedIndexChanged += (s, e) => { S.Set("Up300Send", cmbUp300Send.SelectedItem as string); S.Save(); };
             T(u3, "Used only when a UP300 is connected. Extruder: set it from the Extrude test (new = current x 50 / mm pushed). " +
-                  "Automatic tries storing the job two ways and offers streaming if both fail.", 470, 74, 682, 40, Theme.Small, Theme.Faint);
+                  "Automatic streams the job (the UP300 can't read jobs stored the UP Box+ way: 'SD Card Reading Error').", 470, 74, 682, 40, Theme.Small, Theme.Faint);
             UpdateUp300Card();
         }
 
@@ -954,6 +954,7 @@ namespace OpenBoxBridge
                     else Log(l);
                 };
                 string sendMode = IsUp300 && Up300SendModes.ContainsKey(S.GetS("Up300Send")) ? Up300SendModes[S.GetS("Up300Send")] : "";
+                if (IsUp300 && sendMode.Length == 0) sendMode = "--method=2";   // test 4: stored jobs fail on the UP300 (SD Card Reading Error)
                 if (sendMode == "--method=2" && !Confirm("UP300 test: the job will be streamed while it prints.\n\n  - the USB cable and this PC must stay connected until the print ends\n" +
                         "  - this app can't show progress or stop it while it streams - use the printer's own button to stop\n\nContinue?", "UP300 test: stream the job"))
                 { Log("Not sent."); jobState.Text = ""; return; }
@@ -1053,6 +1054,20 @@ namespace OpenBoxBridge
             Ctl("up3dstatus.exe", new[] { "init" }, "Initialising...", () => { homed = true; UpdatePos(); });
         }
 
+        // UP300 travel, from its info block: machine X 6 to 213 and Y -262 to -3. In this app's
+        // printer frame (posX, posY) that is posY = machine X, posX = -machine Y. After homing
+        // the head is at 0,0, just outside, so only moves back inside are allowed.
+        bool Up300JogOk(double nx, double ny)
+        {
+            Func<double, double, double, double> outBy = (v, lo, hi) => v < lo ? lo - v : (v > hi ? v - hi : 0);
+            double now = outBy(posX, 3, 262) + outBy(posY, 6, 213);
+            double then = outBy(nx, 3, 262) + outBy(ny, 6, 213);
+            if (then <= 0.001 || then < now - 0.001) return true;
+            Log("Not moving: that's outside the UP300's travel (the printer would stop with \"JOG Command Error\"). " +
+                "After Home the head is in a corner, so only one direction works on each axis" + (chkRotate.Checked ? " - X- and Y- here, because prints are turned 180°." : "."));
+            return false;
+        }
+
         double Sign { get { return chkRotate.Checked ? -1.0 : 1.0; } }
         void OrcaXY(out double x, out double y)
         {
@@ -1093,6 +1108,7 @@ namespace OpenBoxBridge
                     double x, y; OrcaXY(out x, out y);
                     if (Math.Abs(x + dx) > 135 || Math.Abs(y + dy) > 110) { Log("That would move the head past the edge of the bed - not moving."); return; }
                 }
+                if (IsUp300 && (dx != 0 || dy != 0) && !Up300JogOk(posX + Sign * dx, posY + Sign * dy)) return;
                 posX += Sign * dx; posY += Sign * dy; posZ += dz;
                 UpdatePos();
             }
@@ -1125,7 +1141,8 @@ namespace OpenBoxBridge
                     printerInfo.Text = "Connected over USB." + (u3 ? "  UP300 - experimental support." : "") + "\n\nPrinter type " + m.Groups[1].Value + "   ·   serial " + m.Groups[2].Value + "   ·   firmware " + m.Groups[3].Value +
                         (st.Success ? "\nSteps/mm: X " + D(st.Groups[1].Value) + "  Y " + D(st.Groups[2].Value) + "  Z " + D(st.Groups[3].Value) : "");
                     printerInfo.ForeColor = Theme.Ink;
-                    Log("Printer found (type " + m.Groups[1].Value + ", firmware " + m.Groups[3].Value + ").");
+                    Log("Printer found (type " + m.Groups[1].Value + ", firmware " + m.Groups[3].Value + ")." +
+                        (st.Success ? "  Steps/mm X " + D(st.Groups[1].Value) + ", Y " + D(st.Groups[2].Value) + ", Z " + D(st.Groups[3].Value) + "." : ""));
                     nextPoll = DateTime.Now;
                 }
                 else

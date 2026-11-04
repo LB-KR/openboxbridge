@@ -137,7 +137,8 @@ namespace OpenBoxBridge
         readonly MainForm main;
         readonly double cx, cy, current;
         readonly Lbl readout, hint, status, result;
-        readonly FlatButton start, fast, save;
+        readonly FlatButton start, fast, save, goBtn;
+        readonly NumericUpDown goZ;
         readonly FlatButton[] moves;
         bool ready;                          // homed and over the centre
         double raised = 0;                   // bed rise, mm, from the printer (bed up = positive)
@@ -159,6 +160,12 @@ namespace OpenBoxBridge
             L("mm above Z home, read from the printer", 20, 194, 300, 18, Theme.Small, Theme.Faint);
 
             fast = Btn("Fast to " + FastTo.ToString("0", Inv) + " mm", 340, 150, 200, 34, BtnKind.Secondary, (s, e) => MoveBed(FastTo - raised));
+
+            // type a height and go straight there (e.g. 225, then fine steps)
+            goZ = new NumericUpDown { Location = new Point(340, 194), Width = 92, Minimum = 0, Maximum = (decimal)Travel, DecimalPlaces = 1, Increment = 1,
+                                      Value = (decimal)Math.Min(Travel, current > 50 ? Math.Floor(current - 3) : FastTo), BorderStyle = BorderStyle.FixedSingle, BackColor = Theme.Surface2, ForeColor = Theme.Ink };
+            Controls.Add(goZ);
+            goBtn = Btn("Go to mm", 440, 190, 100, 32, BtnKind.Ghost, (s, e) => GoTo((double)goZ.Value));
 
             var defs = new object[,] {
                 { "Up 10", 10.0 }, { "Up 5", 5.0 }, { "Up 1", 1.0 }, { "Up 0.1", 0.1 }, { "Up 0.05", 0.05 },
@@ -191,12 +198,13 @@ namespace OpenBoxBridge
             start.Enabled = free;
             fast.Enabled = free && ready && raised < FastTo - 0.5;
             foreach (var b in moves) b.Enabled = free && ready;
+            goBtn.Enabled = goZ.Enabled = free && ready && havePrinterZ;
             moves[0].Enabled = free && ready && raised + 10 <= BigStepMax + 0.01;
             moves[1].Enabled = free && ready && raised + 5 <= MidStepMax + 0.01;
             save.Enabled = free && ready && havePrinterZ && raised > 50;
             readout.Text = ready && havePrinterZ ? raised.ToString("0.00", Inv) : "--";
             if (!ready) hint.Text = "Press step 1 first.";
-            else if (raised < FastTo - 0.5) hint.Text = "Use \"Fast to " + FastTo.ToString("0", Inv) + " mm\", then 5 mm steps while you watch the gap.";
+            else if (raised < FastTo - 0.5) hint.Text = "Use \"Fast to " + FastTo.ToString("0", Inv) + " mm\", or type a height and press Go to mm, then smaller steps while you watch the gap.";
             else hint.Text = "Watch the gap: 5 mm steps while it's big (they stop at " + MidStepMax.ToString("0", Inv) + " mm), 1 mm until it's about 1 mm, then 0.1 and 0.05 until the paper just drags.";
             if (ready && havePrinterZ && raised > 50)
                 result.Text = "Nozzle height would be " + (raised + Paper).ToString("0.00", Inv) + " mm (bed raised + " + Paper.ToString("0.00", Inv) +
@@ -220,6 +228,21 @@ namespace OpenBoxBridge
             Refresh2();
         }
 
+        void GoTo(double target)
+        {
+            if (tools.BusyUser || !ready || !havePrinterZ) return;
+            double limit = current > 50 ? current - 1.0 : MidStepMax;   // stay clear of the nozzle
+            if (target > limit + 0.001)
+            {
+                status.Text = current > 50 ? "That's within 1 mm of the saved nozzle height (" + current.ToString("0.0", Inv) + ") - use the small steps from " + limit.ToString("0", Inv) + "."
+                                           : "Up to " + limit.ToString("0", Inv) + " mm here; use the small steps after that.";
+                return;
+            }
+            double up = target - raised;
+            if (Math.Abs(up) < 0.001) return;
+            Step(up);
+        }
+
         void MoveBed(double up)
         {
             if (tools.BusyUser || !ready || Math.Abs(up) < 0.001) return;
@@ -228,6 +251,11 @@ namespace OpenBoxBridge
             if (up >= 5 && up < 10 && raised + up > MidStepMax + 0.01) { status.Text = "Use 1 mm or smaller steps from here."; return; }
             if (up < 0 && raised + up < 0) up = -raised;
             if (Math.Abs(up) < 0.001) return;
+            Step(up);
+        }
+
+        void Step(double up)
+        {
             tracked += up;
             status.Text = (up > 0 ? "Raising" : "Lowering") + " the bed " + Math.Abs(up).ToString("0.##", Inv) + " mm...";
             // up3dctl jog: Z is the machine axis, bed up = negative
