@@ -107,10 +107,11 @@ int main(int argc, char const *argv[])
     case 0: break;
     case 4: upl_error("ClearProgramBuf failed"); break;
     case 5: upl_error("UseSDProgramBuf failed"); break;
-    case 6: upl_error("Write to SD failed"); break;
+    case 6: upl_error(method == 2 ? "streaming failed: the printer stopped taking data" : "Write to SD failed"); break;
     case 7: upl_error("Write to SD not finished"); break;
     case 8: upl_error("Selecting the stored job failed"); break;
     case 9: upl_error("StartResumeProgram failed"); break;
+    case 20: printf("Stopped on request while streaming.\n"); break;
     default: upl_error("sending failed"); break;
   }
   UP3D_Close();

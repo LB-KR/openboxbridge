@@ -23,7 +23,8 @@ bool     UP3D_GetPrinterStatus(TT_tagPrinterStatus *status);
 uint32_t UP3D_GetPrinterModelId(void);   /* 0x2783 = UP300, 0x2710 = UP Box+ */
 typedef void (*up3d_progress_fn)(uint32_t sent, uint32_t total);
 int      UP3D_SendProgramSD( const UP3D_BLK *blks, uint32_t n, int method, up3d_progress_fn progress );
-int      UP3D_StreamProgram( const UP3D_BLK *blks, uint32_t n, up3d_progress_fn progress );
+int      UP3D_StreamProgram( const UP3D_BLK *blks, uint32_t n, up3d_progress_fn progress );   /* 20 = stopped on request (UP3D_STOPFILE) */
+int      UP3D_StopProgram(void);   /* 0 stopped, 10 not accepted, 11 paused only, 12 still running */
 bool     UP3D_GetPrinterInfo(TT_tagPrinterInfoHeader *pihdr, TT_tagPrinterInfoName *piname, TT_tagPrinterInfoData *pidata, TT_tagPrinterInfoSet pisets[8]);
 
 bool     UP3D_ClearProgramBuf();

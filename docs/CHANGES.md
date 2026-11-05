@@ -50,5 +50,8 @@ is in [`up3d-changes.diff`](up3d-changes.diff).
   The default on the UP Box+ tries method 0, then method 1. On the UP300 it streams (method 2),
   because the UP300 can't run stored jobs ("SD Card Reading Error"); the stream waits up to
   45 minutes for buffer space while the bed heats.
+- Streaming stops on request: the app names a file in `UP3D_STOPFILE`; when it appears, the
+  stream sends no more data, stops the job with `UP3D_StopProgram` (the `up3dstatus stop`
+  sequence, moved into `up3d.c`) and exits with code 20. Used by `up3dload` and `up3dctl`.
 - `up3dsnap` also saves the raw info answers and the USB product id.
 - `tools/usbcap.py` reads `.pcap` and `.pcapng` captures. See [UP300.md](UP300.md).

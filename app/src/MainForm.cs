@@ -128,9 +128,17 @@ namespace OpenBoxBridge
             FormClosing += (s, e) =>
             {
                 string exe = Tools.RunningExe;
-                if (exe != null && exe.Equals("up3dload.exe", StringComparison.OrdinalIgnoreCase) &&
+                if (exe != null && exe.Equals("up3dload.exe", StringComparison.OrdinalIgnoreCase) && !Tools.Streaming &&
                     !Confirm("A print is still being sent to the printer. Closing now cancels sending it.\n\nClose anyway?", "Sending in progress", MessageBoxIcon.Warning))
                 { e.Cancel = true; return; }
+                if (Tools.Streaming)
+                {
+                    if (!Confirm("A print is being streamed to the UP300. Closing the app stops the print.\n\nStop the print and close?", "Streaming in progress", MessageBoxIcon.Warning))
+                    { e.Cancel = true; return; }
+                    // the streaming tool stops the job on its own USB link; ended after 25 s if it can't
+                    Tools.RequestStreamStop(25000);
+                    for (int i = 0; i < 250 && Tools.Streaming; i++) System.Threading.Thread.Sleep(100);
+                }
                 tick.Stop(); SaveAll();
                 Tools.KillRunning();   // never leave a tool holding the USB connection
             };
@@ -956,7 +964,7 @@ namespace OpenBoxBridge
                 string sendMode = IsUp300 && Up300SendModes.ContainsKey(S.GetS("Up300Send")) ? Up300SendModes[S.GetS("Up300Send")] : "";
                 if (IsUp300 && sendMode.Length == 0) sendMode = "--method=2";   // test 4: stored jobs fail on the UP300 (SD Card Reading Error)
                 if (sendMode == "--method=2" && !Confirm("UP300 test: the job will be streamed while it prints.\n\n  - the USB cable and this PC must stay connected until the print ends\n" +
-                        "  - this app can't show progress or stop it while it streams - use the printer's own button to stop\n\nContinue?", "UP300 test: stream the job"))
+                        "  - to stop the print, use Stop in this app (the printer's own button doesn't stop a streamed job)\n\nContinue?", "UP300 test: stream the job"))
                 { Log("Not sent."); jobState.Text = ""; return; }
                 if (sendMode == "--method=2") jobState.Text = "Streaming to the UP300 - keep the PC connected.";
                 var loadArgs = sendMode.Length > 0 ? new[] { umc, sendMode } : new[] { umc };
@@ -964,15 +972,17 @@ namespace OpenBoxBridge
                 Tools.Run("up3dload.exe", loadArgs, (code2, out2) =>
                 {
                     if (code2 == 0) started();
+                    else if (code2 == StreamStopped) { jobState.Text = "Stopped while streaming."; Log("Streaming stopped: no more of the job was sent."); }
                     else if (IsUp300 && sendMode.Length == 0 && Confirm("The UP300 didn't accept the job as a stored print (code " + code2 + ").\n\n" +
                         "Test option: stream it instead. The job is sent while it prints, so:\n  - the USB cable and this PC must stay connected until the print ends\n" +
-                        "  - this app can't show progress or stop it while it streams - use the printer's own button to stop\n\nStream the job now?", "UP300 test: stream the job"))
+                        "  - to stop the print, use Stop in this app (the printer's own button doesn't stop a streamed job)\n\nStream the job now?", "UP300 test: stream the job"))
                     {
                         Log("UP300 test: streaming the job (method 2).");
                         jobState.Text = "Streaming to the UP300 - keep the PC connected.";
                         Tools.Run("up3dload.exe", new[] { umc, "--method=2" }, (code3, out3) =>
                         {
                             if (code3 == 0) { Log("Streaming finished: the whole job is on the printer."); started(); }
+                            else if (code3 == StreamStopped) { jobState.Text = "Stopped while streaming."; Log("Streaming stopped: no more of the job was sent."); }
                             else { jobState.Text = "Streaming failed - see Console."; UsbHint(out3); Alert("Streaming failed (code " + code3 + "). The Console page has the details.", MessageBoxIcon.Error); }
                         }, progressLine);
                     }
@@ -998,10 +1008,13 @@ namespace OpenBoxBridge
             else if (Regex.IsMatch(output, "driver|NOT_SUPPORTED")) Log("Hint: Windows driver problem - see README.txt, 'If Check printer fails'.");
         }
 
+        /// <summary>Exit code of up3dload / up3dctl when a stream was stopped on request.</summary>
+        const int StreamStopped = 20;
+
         void DoStop()
         {
             if (!Confirm(JobActive ? "Stop the current print?" : "Stop whatever the printer is doing?", "Stop", MessageBoxIcon.Warning)) return;
-            Log("Stopping...");
+            Log(Tools.Streaming ? "Stopping - the streaming tool stops the job, then the stop is checked..." : "Stopping...");
             Tools.RunUrgent("up3dstatus.exe", new[] { "stop" }, (c, o) =>
             {
                 nextPoll = DateTime.Now;
@@ -1028,6 +1041,7 @@ namespace OpenBoxBridge
             Tools.Run(exe, args, (code, output) =>
             {
                 if (code == 0) { if (after != null) after(); }
+                else if (code == StreamStopped) Log("Stopped.");
                 else { UsbHint(output); Log("That command did not reach the printer - details above."); }
                 nextPoll = DateTime.Now.AddSeconds(1);
             }, l => { if (!Regex.IsMatch(l, "^[^;]+;[^;]+;[^;]+;[-\\d.]+;")) Log(l); });

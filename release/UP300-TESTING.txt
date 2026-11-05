@@ -1,10 +1,13 @@
-OpenBoxBridge 1.1 - UP300 TEST VERSION (test 4)
+OpenBoxBridge 1.1 - UP300 TEST VERSION (test 5)
 ================================================
 
 Thanks for testing! UP300 support is new and has only been worked out from your USB
-recordings, never on a real UP300. Please go through these steps IN ORDER and stop at
-the first one that doesn't behave. Keep a hand near the printer's own button: pressing
-it stops whatever the printer is doing.
+recordings. Please go through these steps IN ORDER and stop at the first one that
+doesn't behave. Keep the app's Stop button ready: the printer's own button does NOT stop
+a job that is streamed from the app.
+
+New in test 5: Stop in the app works while a job is streaming (in test 4 it waited until
+the whole job had been sent). If you did steps 1-5 with test 4, go straight to step 6.
 
 What to send back at the end (or as soon as something goes wrong):
   - up300-diagnostics.txt and up300-snapshot.txt (step 1)
@@ -74,9 +77,11 @@ Test 2 showed the UP300 can't run a job stored the UP Box+ way ("SD Card Reading
 then "JOG Command Error"). So on the UP300, Automatic now STREAMS the job: it is sent
 while it runs, the same way the home and jog moves are sent (and those work).
   - The app asks first; say Yes. The head should home, then draw squares in the air.
-  - Keep the USB cable and PC connected until it's done. The app can't stop it while it
-    streams - use the printer's own button (or wait, it lasts about 8 minutes).
-  - Tell me: did it home and draw squares, did anything show on the printer's screen,
+  - Keep the USB cable and PC connected until it's done.
+  - NEW TEST: about 1 minute into the squares, press Stop in the app. The head should stop
+    within a few seconds and the Console should say "Streaming stopped". Then Dashboard >
+    Initialise to park the head.
+  - Tell me: did it stop straight away, did anything show on the printer's screen,
     and send the Console text.
 
 
@@ -90,6 +95,7 @@ New value for Setup > UP300 section > "Extruder steps/mm":
   new = current value x 50 / pushed
 e.g. current 213.5, pushed 40 mm  ->  213.5 x 50 / 40 = 266.9
 Enter it, and repeat the test until it pushes 49-51 mm. Tell me the final value.
+(Test 4 pushed 45-46 mm at 213.5, so start this time with 235.)
 
 
 8. FIRST PRINT
@@ -97,6 +103,8 @@ Enter it, and repeat the test until it pushes 49-51 mm. Tell me the final value.
 Only once 1-7 are good. In OrcaSlicer, PrusaSlicer or Bambu Studio, install the presets
 from Setup and use printer "UP Box+ USB" (the UP300 has the same bed size; the preset
 just limits the height to 205 mm). Print a 20 mm cube with "UP Box+ 0.20mm" and
-"UP PLA (Box+)". Watch the first layer, and be ready to press the printer's button.
+"UP PLA (Box+)". Watch the first layer, and be ready to press Stop in the app.
+Please also stop one print part-way with Stop in the app (a skirt or first layer is
+enough), and tell me if it stopped within a few seconds.
 
 Thanks again!

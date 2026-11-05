@@ -715,16 +715,116 @@ int UP3D_SendProgramSD( const UP3D_BLK *blks, uint32_t n, int method, up3d_progr
   return 0;
 }
 
+///////////////////////////////////////////
+// Stopping the running program (moved here from up3dstatus so that the streaming code
+// can stop a job on the USB connection it already holds).
+///////////////////////////////////////////
+
+/* Heaters off straight away (direct parameter writes, not program blocks:
+   while a job runs from the SD card the program buffer is not read). */
+static void _heaters_off_now(void)
+{
+  UP3D_SetParameter(PARA_HEATER_NOZZLE1_ON, 0);
+  UP3D_SetParameter(PARA_NOZZLE1_TEMP, 0);
+  UP3D_SetParameter(PARA_HEATER_BED_ON, 0);
+  UP3D_SetParameter(PARA_BED_TEMP, 0);
+}
+
+/* program state (param 0x01): 0 stopped, 1 running, 2 paused, 3 error */
+static bool _wait_program_not_running(int ms)
+{
+  for( int t = 0; t <= ms; t += 250 )
+  {
+    int32_t ps = UP3D_GetParameter(0x01);
+    int32_t ms_ = UP3D_GetParameter(0x00);
+    if( ps != 1 && ms_ != 2 ) return true;
+    usleep(250*1000);
+  }
+  return false;
+}
+
+/* STOP: use the printer's own "stop program" request (param 0x0D), which
+   works for jobs running from the SD card. Heaters off as well. If the
+   printer ignores it, pause the program (0x0C) so the motion halts.
+   Never calls Start/Resume (that could restart the job). */
+int UP3D_StopProgram(void)
+{
+  int32_t m0 = UP3D_GetParameter(0x00), p0 = UP3D_GetParameter(0x01);
+  printf("Before stop: machine state %d, program state %d\n", m0, p0);
+  fflush(stdout);
+
+  bool sent = UP3D_SetParameter(0x0D, 1);
+  _heaters_off_now();
+  UP3D_SetParameter(0x1C, 0);                 /* "not printing" */
+  if( !sent ) { printf("ERROR: the printer did not accept the stop request\n"); return 10; }
+
+  if( _wait_program_not_running(5000) )
+  {
+    UP3D_ClearProgramBuf();
+    usleep(300*1000);
+    UP3D_SetParameter(0x0D, 0);               /* ready for the next job */
+    printf("STOPPED: machine state %d, program state %d. Heaters off.\n",
+           UP3D_GetParameter(0x00), UP3D_GetParameter(0x01));
+    return 0;
+  }
+
+  printf("Stop request not obeyed after 5 s - pausing the program instead\n"); fflush(stdout);
+  UP3D_SetParameter(0x0C, 1);
+  _heaters_off_now();
+  if( _wait_program_not_running(5000) )
+  {
+    printf("PAUSED: motion halted and heaters off, but the job is only paused.\n"
+           "Press the button on the printer to end it.\n");
+    return 11;
+  }
+  printf("ERROR: the printer is still running the job (machine state %d, program state %d).\n"
+         "Use the button on the printer.\n", UP3D_GetParameter(0x00), UP3D_GetParameter(0x01));
+  return 12;
+}
+
+/* Stop requests while streaming: the app creates the file named in UP3D_STOPFILE.
+   The streaming tool holds the USB connection, so no other tool can reach the printer
+   until it ends; it checks for the file between transfers and stops the job itself. */
+static const char *_up3d_stopfile(void)
+{
+  const char *p = getenv("UP3D_STOPFILE");
+  return (p && *p) ? p : NULL;
+}
+
+static bool _up3d_stop_requested(void)
+{
+  const char *p = _up3d_stopfile();
+  if( !p ) return false;
+  FILE *f = fopen( p, "rb" );
+  if( !f ) return false;
+  fclose( f );
+  return true;
+}
+
 /* Streams a program into the printer's program buffer and runs it while it is still
    arriving (how UP Studio 3 sends moves to the UP300). The USB cable has to stay
-   connected until everything is sent. Returns 0, 4 (clear), 6 (write/no answer) or 9 (start). */
+   connected until everything is sent. Returns 0, 4 (clear), 6 (write/no answer),
+   9 (start) or 20 (stopped on request: no more data sent, UP3D_StopProgram run). */
 int UP3D_StreamProgram( const UP3D_BLK *blks, uint32_t n, up3d_progress_fn progress )
 {
+  if( _up3d_stopfile() ) remove( _up3d_stopfile() );   /* a request left over from earlier */
   if( !UP3D_ClearProgramBuf() ) return 4;
+  printf("Streaming: started (%u blocks). Stop in the app ends the job.\n", n);
+  fflush(stdout);
   bool started = false;
   uint32_t i = 0, t_last = _ms_now(), t_beat = t_last;
   while( i < n )
   {
+    if( _up3d_stop_requested() )
+    {
+      remove( _up3d_stopfile() );
+      printf("\nStreaming: stop requested after %u of %u blocks - sending no more data\n", i, n);
+      fflush(stdout);
+      int r = UP3D_StopProgram();
+      printf("Streaming: stopped (stop result %d)\n", r);
+      fflush(stdout);
+      return 20;
+    }
     int64_t fb = _up3d_free_blocks();
     if( fb < 0 )
     {
@@ -750,5 +850,7 @@ int UP3D_StreamProgram( const UP3D_BLK *blks, uint32_t n, up3d_progress_fn progr
     if( progress ) progress( i, n );
   }
   if( !started && !UP3D_StartResumeProgram() ) return 9;
+  printf("Streaming: all %u blocks sent\n", n);
+  fflush(stdout);
   return 0;
 }

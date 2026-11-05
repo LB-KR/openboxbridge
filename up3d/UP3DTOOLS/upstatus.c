@@ -50,66 +50,11 @@ void print_usage_and_exit(char *name)
 }
 
 
-/* Heaters off straight away (direct parameter writes, not program blocks:
-   while a job runs from the SD card the program buffer is not read). */
-static void heaters_off_now(void)
-{
-  UP3D_SetParameter(PARA_HEATER_NOZZLE1_ON, 0);
-  UP3D_SetParameter(PARA_NOZZLE1_TEMP, 0);
-  UP3D_SetParameter(PARA_HEATER_BED_ON, 0);
-  UP3D_SetParameter(PARA_BED_TEMP, 0);
-}
-
-/* program state (param 0x01): 0 stopped, 1 running, 2 paused, 3 error */
-static bool wait_program_not_running(int ms)
-{
-  for( int t = 0; t <= ms; t += 250 )
-  {
-    int32_t ps = UP3D_GetParameter(0x01);
-    int32_t ms_ = UP3D_GetParameter(0x00);
-    if( ps != 1 && ms_ != 2 ) return true;
-    usleep(250*1000);
-  }
-  return false;
-}
-
-/* STOP: use the printer's own "stop program" request (param 0x0D), which
-   works for jobs running from the SD card. Heaters off as well. If the
-   printer ignores it, pause the program (0x0C) so the motion halts.
-   Never calls Start/Resume (that could restart the job). */
+/* STOP: the sequence itself is UP3D_StopProgram (up3d.c), shared with the streaming code
+   so that a stop also works while a job is being streamed. Returns 0, 10, 11 or 12. */
 static int do_stop(void)
 {
-  int32_t m0 = UP3D_GetParameter(0x00), p0 = UP3D_GetParameter(0x01);
-  printf("Before stop: machine state %d, program state %d\n", m0, p0);
-  fflush(stdout);
-
-  bool sent = UP3D_SetParameter(0x0D, 1);
-  heaters_off_now();
-  UP3D_SetParameter(0x1C, 0);                 /* "not printing" */
-  if( !sent ) { printf("ERROR: the printer did not accept the stop request\n"); return 10; }
-
-  if( wait_program_not_running(5000) )
-  {
-    UP3D_ClearProgramBuf();
-    usleep(300*1000);
-    UP3D_SetParameter(0x0D, 0);               /* ready for the next job */
-    printf("STOPPED: machine state %d, program state %d. Heaters off.\n",
-           UP3D_GetParameter(0x00), UP3D_GetParameter(0x01));
-    return 0;
-  }
-
-  printf("Stop request not obeyed after 5 s - pausing the program instead\n"); fflush(stdout);
-  UP3D_SetParameter(0x0C, 1);
-  heaters_off_now();
-  if( wait_program_not_running(5000) )
-  {
-    printf("PAUSED: motion halted and heaters off, but the job is only paused.\n"
-           "Press the button on the printer to end it.\n");
-    return 11;
-  }
-  printf("ERROR: the printer is still running the job (machine state %d, program state %d).\n"
-         "Use the button on the printer.\n", UP3D_GetParameter(0x00), UP3D_GetParameter(0x01));
-  return 12;
+  return UP3D_StopProgram();
 }
 
 /* pos: wait until the printer has finished moving, then report where the

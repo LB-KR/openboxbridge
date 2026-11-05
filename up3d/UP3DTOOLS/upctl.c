@@ -133,11 +133,13 @@ int main(int argc, char *argv[])
   if( !UP3D_Open() ) return 5;
   if( !UP3D_IsPrinterResponsive() ) { printf("ERROR: UP printer is not responding\n"); UP3D_Close(); return 6; }
   bool ok;
+  int sr = 0;
   if( n <= 60 )        ok = send_direct(blks, n);
-  else if( mtype == 'u' ) ok = (0 == UP3D_StreamProgram(blks, (uint32_t)n, NULL));   /* UP300: run it while sending */
+  else if( mtype == 'u' ) ok = (0 == (sr = UP3D_StreamProgram(blks, (uint32_t)n, NULL)));   /* UP300: run it while sending */
   else                 ok = (0 == UP3D_SendProgramSD(blks, (uint32_t)n, 0, NULL));
   UP3D_Close();
   free(blks);
+  if( sr == 20 ) { printf("Stopped on request.\n"); return 20; }
   if( !ok ) { printf("ERROR: could not send the command to the printer\n"); return 7; }
   printf("Sent\n");
   return 0;

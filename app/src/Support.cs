@@ -153,6 +153,7 @@ namespace OpenBoxBridge
             public Action<string> OnLine; public Action<int, string> OnDone;
             public Process Proc;
             public DateTime LastOutput = DateTime.Now;
+            public bool Streaming;   // the tool said "Streaming: started": it holds the USB link for the whole print
         }
         readonly string bin;
         readonly Control ui;
@@ -162,6 +163,13 @@ namespace OpenBoxBridge
         public bool BusyUser { get { lock (gate) { return (running != null && !running.Quiet) || HasUserQueued(); } } }
         public bool Idle { get { lock (gate) { return running == null && queue.Count == 0; } } }
         public event Action BusyChanged;
+
+        /// <summary>File a streaming tool checks between transfers (passed as UP3D_STOPFILE).
+        /// Creating it asks the tool to send no more data and stop the job on its own USB link.</summary>
+        public readonly string StopFile = Path.Combine(Path.GetTempPath(), "OpenBoxBridge-stop-" + Process.GetCurrentProcess().Id + ".flag");
+
+        /// <summary>True while a tool is streaming a job (or a long control program) to the printer.</summary>
+        public bool Streaming { get { lock (gate) return running != null && running.Streaming && running.Proc != null && !running.Proc.HasExited; } }
 
         public ToolRunner(string bin, Control ui)
         {
@@ -249,8 +257,33 @@ namespace OpenBoxBridge
             if (start) Next();
         }
 
+        /// <summary>Asks a streaming tool to stop the job itself (it holds the USB link, so no other tool
+        /// can reach the printer). If it hasn't ended after <paramref name="killAfterMs"/>, it is ended.</summary>
+        public bool RequestStreamStop(int killAfterMs)
+        {
+            Job j;
+            lock (gate) j = running;
+            if (j == null || !j.Streaming || j.Proc == null) return false;
+            try { File.WriteAllText(StopFile, "stop"); } catch { }
+            new Thread(() =>
+            {
+                try
+                {
+                    if (!j.Proc.WaitForExit(killAfterMs))
+                    {
+                        j.Proc.Kill();
+                        Say(j.Exe + " did not stop streaming in " + (killAfterMs / 1000) + " s and was ended.");
+                    }
+                }
+                catch { }
+            }) { IsBackground = true, Name = "stream stop" }.Start();
+            return true;
+        }
+
         /// <summary>Runs ahead of everything queued (used by STOP). A running tool that is only
-        /// waiting on the printer is ended so the stop isn't held up; an upload is left to finish.</summary>
+        /// waiting on the printer is ended so the stop isn't held up; an upload is left to finish.
+        /// A tool that is streaming is asked to stop the job itself; the stop command then runs
+        /// again after it, to confirm.</summary>
         public void RunUrgent(string exe, string[] args, Action<int, string> onDone, Action<string> onLine = null)
         {
             var job = new Job { Exe = exe, Args = args, Quiet = false, OnDone = onDone, OnLine = onLine };
@@ -262,12 +295,14 @@ namespace OpenBoxBridge
                 queue.Enqueue(job);
                 foreach (var j in rest) queue.Enqueue(j);
                 start = running == null;
-                if (running != null && running.Proc != null &&
+                if (running != null && running.Streaming) { }   // handled below, outside the lock
+                else if (running != null && running.Proc != null &&
                     !running.Exe.Equals("up3dload.exe", StringComparison.OrdinalIgnoreCase))
                 {
                     try { if (!running.Proc.HasExited) running.Proc.Kill(); } catch { }
                 }
             }
+            RequestStreamStop(25000);
             Fire();
             if (start) Next();
         }
@@ -299,6 +334,8 @@ namespace OpenBoxBridge
                 };
                 var env = Env;
                 if (env != null) foreach (var kv in env()) psi.EnvironmentVariables[kv.Key] = kv.Value;
+                try { if (File.Exists(StopFile)) File.Delete(StopFile); } catch { }   // only the tool started now may see a new request
+                psi.EnvironmentVariables["UP3D_STOPFILE"] = StopFile;
                 using (var p = Process.Start(psi))
                 {
                     lock (gate) job.Proc = p;
@@ -353,6 +390,7 @@ namespace OpenBoxBridge
         void Emit(Job job, string line)
         {
             job.LastOutput = DateTime.Now;
+            if (line.StartsWith("Streaming: started")) lock (gate) job.Streaming = true;
             if (job.OnLine == null) return;
             try { ui.BeginInvoke(job.OnLine, line); } catch (InvalidOperationException) { }
         }
