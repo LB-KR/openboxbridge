@@ -807,7 +807,7 @@ namespace OpenBoxBridge
         /// <summary>Follows a print we started: progress, and filament/history when it ends.</summary>
         void TrackJob()
         {
-            if (!JobActive) { jobState.Text = connected ? (isPrinting ? "The printer is running a routine." : "Printer ready.") : jobState.Text; return; }
+            if (!JobActive) { if (!sending) jobState.Text = connected ? (isPrinting ? "The printer is running a routine." : "Printer ready.") : jobState.Text; return; }
             string jp = S.GetS("JobPrinter");
             if (jp.Length > 0 && connectedSerial.Length > 0 && jp != connectedSerial)
             {
@@ -823,9 +823,11 @@ namespace OpenBoxBridge
                 jobBar.Value = lastPercent;
                 tLayer.Set(lastLayer <= 0 ? "Preparing" : (total > 0 ? lastLayer + " / " + total : lastLayer.ToString()), "Layer", Color.Empty);
                 jobState.Text = lastPercent > 0 ? "Printing  ·  " + lastPercent + "%" : "Heating up - the print starts when the bed and nozzle are ready.";
+                if (sending && streamSentPct < 100) jobState.Text += "  ·  " + streamSentPct + "% sent - keep the PC connected";
                 return;
             }
             // not running: finished, cancelled, or ended while the app wasn't watching
+            if (sending && !jobSawRunning) return;   // streaming: the printer starts once the first data is in
             if (jobFirstCheck == DateTime.MinValue) jobFirstCheck = DateTime.Now;
             if (!jobSawRunning && !jobGap && (DateTime.Now - jobFirstCheck).TotalSeconds < 8) return;
             int seen = (int)S.GetD("JobLastPercent");
@@ -912,6 +914,10 @@ namespace OpenBoxBridge
             if (!S.GetB("Calibrated") && !Confirm("The bed centre hasn't been set yet, so the print may land in the wrong place.\n\nPrint anyway?", "Bed centre not set", MessageBoxIcon.Warning)) return;
             if (g != null && g.Area.StartsWith("0x0") &&
                 !Confirm("This file was sliced with the bed origin in a corner (" + g.Area + ").\nThe UP Box+ USB profile puts 0,0 in the middle of the bed.\n\nSlice it with the 'UP Box+ USB' printer profile. Print anyway?", "Different printer profile", MessageBoxIcon.Warning)) return;
+            if (IsUp300 && g != null && g.Printer.IndexOf("UP Box", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                !Confirm("This file was sliced with the UP Box+ printer profile, but a UP300 is connected.\n\n" +
+                    "The UP300 can't reach the edges of the UP Box+ print area: a move there stops the print with \"JogCmd Error\". " +
+                    "Slice it with the 'UP300 USB' printer profile (Setup > Slicer presets installs it).\n\nPrint anyway?", "UP Box+ profile on a UP300", MessageBoxIcon.Warning)) return;
             if (isPrinting && !Confirm("The printer is already running a job. Sending a new one replaces it. Continue?", "Printer busy", MessageBoxIcon.Warning)) return;
             double left = S.GetD("SpoolStart") - S.GetD("SpoolUsed");
             if (g != null && g.Grams > 0 && g.Grams > left &&
@@ -923,7 +929,7 @@ namespace OpenBoxBridge
             double[] m; if (!Motion.TryGetValue(cmbMotion.SelectedItem as string ?? "Normal", out m)) m = Motion["Normal"];
             var args = new List<string> { MachineType, src, umc, Num(h), Num(m[0]), Num(m[1]), Num(m[2]), Num((double)numOX.Value), Num((double)numOY.Value) };
             if (chkRotate.Checked) args.Add("rot180");
-            Log("Converting " + Path.GetFileName(path) + " for the UP Box+ ...");
+            Log("Converting " + Path.GetFileName(path) + " for the " + (IsUp300 ? "UP300" : "UP Box+") + " ...");
             jobState.Text = "Converting..."; jobBar.Fill = Theme.Accent; jobBar.Value = 0;
             Tools.Run("up3dtranscode.exe", args.ToArray(), (code, output) =>
             {
@@ -941,8 +947,11 @@ namespace OpenBoxBridge
                              "The bed heats first; the print starts a few minutes later. Send to printer now?";
                 if (!Confirm(msg, "Send to printer")) { Log("Not sent."); jobState.Text = ""; return; }
                 Log("Sending to the printer over USB...");
+                bool jobStarted = false;
                 Action started = () =>
                 {
+                    if (jobStarted) return;
+                    jobStarted = true;
                     jobBar.Value = 0;
                     S.Set("JobFile", path); S.Set("JobStart", DateTime.Now.ToString("o", Inv));
                     S.Set("JobGrams", g != null ? g.Grams : 0.0); S.Set("JobLayers", (double)convertedLayers);
@@ -955,24 +964,51 @@ namespace OpenBoxBridge
                     nextPoll = DateTime.Now;
                     UpdateEnabled();
                 };
+                // streaming (UP300): the tool holds the USB link for the whole print, so it reports the
+                // printer status itself ("Status;" + the up3dstatus fields) and the job counts as started
+                // as soon as streaming begins
                 Action<string> progressLine = l =>
                 {
                     var pm2 = Regex.Match(l, @"^UPload: [\d.]+ kB sent \((\d+)%\)");
-                    if (pm2.Success) { jobBar.Value = Math.Min(100, int.Parse(pm2.Groups[1].Value)); jobState.Text = "Streaming " + pm2.Groups[1].Value + "% sent - keep the PC connected"; }
+                    if (pm2.Success) { streamSentPct = Math.Min(100, int.Parse(pm2.Groups[1].Value)); if (!isPrinting || lastPercent <= 0) jobState.Text = "Streaming - " + streamSentPct + "% of the job sent. Keep the PC connected."; }
+                    else if (l.StartsWith("Status;")) OnStatus(0, l.Substring(7));
+                    else if (l.StartsWith("Streaming: started")) { Log(l); started(); }
+                    else if (l.StartsWith("Heating the bed to")) { Log(l); jobState.Text = "Heating the bed before the print starts..."; }
                     else Log(l);
+                };
+                Action<int, string> streamFailed = (sc, so) =>
+                {
+                    sending = false;
+                    if (sc == StreamStopped) { jobState.Text = "Stopped while streaming."; Log("Streaming stopped: no more of the job was sent."); return; }
+                    string err = so.Split('\r', '\n').LastOrDefault(x => x.StartsWith("ERROR:")) ?? "";
+                    if (sc == StreamPrinterEnded)
+                    {
+                        jobState.Text = "The printer ended the job - see Console.";
+                        Alert("The printer ended the print by itself.\n\n" + err.Replace("ERROR: ", "") + "\n\nThe heaters are off. The head is moved away so you can reach the print.", MessageBoxIcon.Error);
+                        Park();
+                        return;
+                    }
+                    if (sc == 22) { jobState.Text = "The bed didn't heat up - not printed."; Alert("The bed didn't reach its temperature in 30 minutes, so the job wasn't sent.\n\n" + err.Replace("ERROR: ", "") + "\n\nThe heaters are off.", MessageBoxIcon.Error); return; }
+                    jobState.Text = "Streaming failed - see Console."; UsbHint(so);
+                    Alert("Streaming failed (code " + sc + "). The Console page has the details." + (sc == 6 ? "\n\nIf the printer still answered, its heaters were turned off." : ""), MessageBoxIcon.Error);
                 };
                 string sendMode = IsUp300 && Up300SendModes.ContainsKey(S.GetS("Up300Send")) ? Up300SendModes[S.GetS("Up300Send")] : "";
                 if (IsUp300 && sendMode.Length == 0) sendMode = "--method=2";   // test 4: stored jobs fail on the UP300 (SD Card Reading Error)
-                if (sendMode == "--method=2" && !Confirm("UP300 test: the job will be streamed while it prints.\n\n  - the USB cable and this PC must stay connected until the print ends\n" +
+                if (sendMode == "--method=2" && !Confirm("UP300 test: the job will be streamed while it prints.\n\n  - the bed heats first; the job is sent when it's hot\n  - the USB cable and this PC must stay connected until the print ends (and the PC mustn't sleep)\n" +
                         "  - to stop the print, use Stop in this app (the printer's own button doesn't stop a streamed job)\n\nContinue?", "UP300 test: stream the job"))
                 { Log("Not sent."); jobState.Text = ""; return; }
                 if (sendMode == "--method=2") jobState.Text = "Streaming to the UP300 - keep the PC connected.";
-                var loadArgs = sendMode.Length > 0 ? new[] { umc, sendMode } : new[] { umc };
+                var la = new List<string> { umc };
+                if (sendMode.Length > 0) la.Add(sendMode);
+                if (sendMode == "--method=2" && g != null && g.BedTemp > 0) { la.Add("--bed=" + g.BedTemp); la.Add("--standby=150"); }
+                var loadArgs = la.ToArray();
+                sending = true; streamSentPct = 0;
                 if (sendMode.Length > 0) Log("UP300 test: sending with " + sendMode + ".");
                 Tools.Run("up3dload.exe", loadArgs, (code2, out2) =>
                 {
+                    sending = false;
                     if (code2 == 0) started();
-                    else if (code2 == StreamStopped) { jobState.Text = "Stopped while streaming."; Log("Streaming stopped: no more of the job was sent."); }
+                    else if (sendMode == "--method=2") streamFailed(code2, out2);
                     else if (IsUp300 && sendMode.Length == 0 && Confirm("The UP300 didn't accept the job as a stored print (code " + code2 + ").\n\n" +
                         "Test option: stream it instead. The job is sent while it prints, so:\n  - the USB cable and this PC must stay connected until the print ends\n" +
                         "  - to stop the print, use Stop in this app (the printer's own button doesn't stop a streamed job)\n\nStream the job now?", "UP300 test: stream the job"))
@@ -981,9 +1017,9 @@ namespace OpenBoxBridge
                         jobState.Text = "Streaming to the UP300 - keep the PC connected.";
                         Tools.Run("up3dload.exe", new[] { umc, "--method=2" }, (code3, out3) =>
                         {
+                            sending = false;
                             if (code3 == 0) { Log("Streaming finished: the whole job is on the printer."); started(); }
-                            else if (code3 == StreamStopped) { jobState.Text = "Stopped while streaming."; Log("Streaming stopped: no more of the job was sent."); }
-                            else { jobState.Text = "Streaming failed - see Console."; UsbHint(out3); Alert("Streaming failed (code " + code3 + "). The Console page has the details.", MessageBoxIcon.Error); }
+                            else streamFailed(code3, out3);
                         }, progressLine);
                     }
                     else
@@ -994,6 +1030,7 @@ namespace OpenBoxBridge
                     }
                 }, l =>
                 {
+                    if (sendMode == "--method=2") { progressLine(l); return; }
                     var pm = Regex.Match(l, @"^UPload: [\d.]+ kB sent \((\d+)%\)");
                     if (pm.Success) { jobBar.Value = int.Parse(pm.Groups[1].Value); jobState.Text = "Sending " + pm.Groups[1].Value + "%"; }
                     else Log(l);
@@ -1010,6 +1047,17 @@ namespace OpenBoxBridge
 
         /// <summary>Exit code of up3dload / up3dctl when a stream was stopped on request.</summary>
         const int StreamStopped = 20;
+        /// <summary>Exit code of up3dload when the printer ended a streamed job by itself (heaters turned off).</summary>
+        const int StreamPrinterEnded = 21;
+        bool sending;        // up3dload is running for the current print (incl. the UP300 bed preheat)
+        int streamSentPct;   // how much of a streamed job has been sent
+
+        /// <summary>UP300: after a stop the head sits on the print. Initialise homes it and lowers the bed.</summary>
+        void Park()
+        {
+            if (!IsUp300) return;
+            Ctl("up3dstatus.exe", new[] { "init" }, "Moving the head away (Initialise) so you can reach the print...", () => { homed = true; UpdatePos(); });
+        }
 
         void DoStop()
         {
@@ -1018,7 +1066,7 @@ namespace OpenBoxBridge
             Tools.RunUrgent("up3dstatus.exe", new[] { "stop" }, (c, o) =>
             {
                 nextPoll = DateTime.Now;
-                if (c == 0) { Log("Stopped. Heaters off."); return; }
+                if (c == 0) { Log("Stopped. Heaters off."); Park(); return; }
                 if (c == 11) { Alert("The printer paused the job and turned the heaters off, but didn't end it.\n\nPress the button on the printer to end the job.", MessageBoxIcon.Warning); return; }
                 if (c == 12) { Alert("The printer is still running the job.\n\nPress the button on the printer to stop it.", MessageBoxIcon.Error); return; }
                 UsbHint(o);
@@ -1042,6 +1090,7 @@ namespace OpenBoxBridge
             {
                 if (code == 0) { if (after != null) after(); }
                 else if (code == StreamStopped) Log("Stopped.");
+                else if (code == StreamPrinterEnded) Log("The printer ended that command by itself - details above. Heaters off.");
                 else { UsbHint(output); Log("That command did not reach the printer - details above."); }
                 nextPoll = DateTime.Now.AddSeconds(1);
             }, l => { if (!Regex.IsMatch(l, "^[^;]+;[^;]+;[^;]+;[-\\d.]+;")) Log(l); });
@@ -1209,7 +1258,7 @@ namespace OpenBoxBridge
         // =====================================================================================
         // UP300 support (experimental): same controller family as the UP Box+, different
         // motor steps, USB endpoint and job storage; see docs/UP300.md
-        const double Up300ESteps = 213.5;
+        const double Up300ESteps = 235;   // test 5: 50 mm asked, 51 mm pushed (213.5 pushed 45-46 mm)
         public bool IsUp300 { get { return S.GetS("Model") == "up300"; } }
         /// <summary>Machine type passed to the converter and printer tools.</summary>
         public string MachineType { get { return IsUp300 ? "up300" : "box"; } }
@@ -1225,6 +1274,13 @@ namespace OpenBoxBridge
         {
             uint v; if (!uint.TryParse(id, out v) || v == 0) return;
             string model = v == 0x2783 ? "up300" : "box";
+            if (model == "up300" && Math.Abs(S.GetD("ESteps") - 213.5) < 0.001)
+            {
+                // the old default was never measured: move it to the test 5 value
+                S.Set("ESteps", Up300ESteps); S.Save();
+                BeginInvoke((MethodInvoker)delegate { if (numESteps != null) numESteps.Value = Clamp(numESteps, Up300ESteps); });
+                Log("UP300 extruder steps/mm changed from the old default 213.5 to " + Up300ESteps.ToString("0.#", Inv) + " (measured in test 5).");
+            }
             if (S.GetS("Model") == model) return;
             S.Set("Model", model);
             if (model == "up300" && S.GetD("ESteps") <= 1) S.Set("ESteps", Up300ESteps);
@@ -1402,7 +1458,7 @@ namespace OpenBoxBridge
             if (SlicerRunning("orca-slicer", "OrcaSlicer")) { Alert("Please close OrcaSlicer first, then press the button again."); return; }
             int n = InstallJsonPresets(src, orcaRoot);
             Log("Orca presets installed (" + n + " files).");
-            Alert("Installed " + n + " preset files.\n\nOpen OrcaSlicer and choose:\n  Printer:   UP Box+ USB\n  Process:   UP Box+ 0.20mm (or 0.15mm Fine / 0.25mm Draft)\n  Filament:  UP PLA (Box+) or UP ABS (Box+)", MessageBoxIcon.Information);
+            Alert("Installed " + n + " preset files.\n\nOpen OrcaSlicer and choose:\n  Printer:   UP Box+ USB (UP300 USB for a UP300)\n  Process:   UP Box+ 0.20mm (or 0.15mm Fine / 0.25mm Draft)\n  Filament:  UP PLA (Box+) or UP ABS (Box+)", MessageBoxIcon.Information);
         }
 
         void InstallBambu()
@@ -1414,7 +1470,7 @@ namespace OpenBoxBridge
             if (SlicerRunning("bambu-studio", "BambuStudio")) { Alert("Please close Bambu Studio first, then press the button again."); return; }
             int n = InstallJsonPresets(src, root);
             Log("Bambu Studio presets installed (" + n + " files).");
-            Alert("Installed " + n + " preset files.\n\nOpen Bambu Studio and choose:\n  Printer:   UP Box+ USB (under user presets)\n  Process:   UP Box+ 0.20mm (or 0.15mm Fine / 0.25mm Draft)\n  Filament:  UP PLA (Box+) or UP ABS (Box+)\n\nThen slice and use Export G-code (not Print).", MessageBoxIcon.Information);
+            Alert("Installed " + n + " preset files.\n\nOpen Bambu Studio and choose:\n  Printer:   UP Box+ USB or UP300 USB (under user presets)\n  Process:   UP Box+ 0.20mm (or 0.15mm Fine / 0.25mm Draft)\n  Filament:  UP PLA (Box+) or UP ABS (Box+)\n\nThen slice and use Export G-code (not Print).", MessageBoxIcon.Information);
         }
 
         void InstallPrusa()
@@ -1438,7 +1494,7 @@ namespace OpenBoxBridge
                 }
             }
             Log("PrusaSlicer presets installed (" + n + " files).");
-            Alert("Installed " + n + " preset files.\n\nOpen PrusaSlicer (Expert mode shows every setting) and choose:\n  Printer:   UP Box+ USB\n  Print:     UP Box+ 0.20mm (or 0.15mm Fine / 0.25mm Draft)\n  Filament:  UP PLA (Box+) or UP ABS (Box+)\n\nThen slice and use Export G-code.", MessageBoxIcon.Information);
+            Alert("Installed " + n + " preset files.\n\nOpen PrusaSlicer (Expert mode shows every setting) and choose:\n  Printer:   UP Box+ USB (UP300 USB for a UP300)\n  Print:     UP Box+ 0.20mm (or 0.15mm Fine / 0.25mm Draft)\n  Filament:  UP PLA (Box+) or UP ABS (Box+)\n\nThen slice and use Export G-code.", MessageBoxIcon.Information);
         }
 
         // =====================================================================================

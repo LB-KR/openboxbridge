@@ -51,7 +51,9 @@ A 20 mm test cube that leaned identically in two prints came out square. Details
 ## Download and install
 
 1. Download `OpenBoxBridge-<version>-windows.zip` from **[Releases](../../releases)** and unzip the
-   whole folder somewhere permanent (for example Documents). Don't run it from inside the zip.
+   whole folder somewhere permanent, for example C:\OpenBoxBridge - not in OneDrive (Documents and Desktop
+   often are) or Program Files, because the app saves its settings and jobs in its own folder. Don't run it
+   from inside the zip.
 2. The PC needs the UP printer's USB driver, which **UP Studio** installs. If UP Studio has ever
    talked to the printer on this PC, it's there. Close UP Studio while using OpenBoxBridge, because
    only one program can use the printer at a time.

@@ -55,8 +55,11 @@ come out right.
 ONE-TIME SETUP (about 10 minutes)
 ---------------------------------
 0. Install
-   - Unzip the whole "OpenBoxBridge" folder somewhere permanent (e.g.
-     Documents). Don't run it from inside the zip.
+   - Unzip the whole "OpenBoxBridge" folder somewhere permanent, e.g.
+     C:\OpenBoxBridge. Not in OneDrive (Documents and Desktop often are; it
+     locks and copies the app's files while it runs) and not in Program Files
+     (the app saves its settings and jobs in its own folder). Don't run it
+     from inside the zip.
    - The PC needs the UP printer's USB driver, which UP Studio installs.
      If UP Studio has ever talked to the printer on this PC, it's there.
    - Windows may warn that the app is from an unknown publisher (it isn't

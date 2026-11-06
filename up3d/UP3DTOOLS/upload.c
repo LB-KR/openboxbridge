@@ -36,11 +36,14 @@ static void progress(uint32_t sent, uint32_t total)
 int main(int argc, char const *argv[])
 {
   const char *file = NULL;
-  int method = -1;   /* -1 = automatic: UP Box+ = UP3D's way, then UP Studio's if the printer doesn't
+  int method = -1;
+  int bed = 0, standby = 0;   /* streaming only: heat the bed to this first (UP300), nozzle standby */   /* -1 = automatic: UP Box+ = UP3D's way, then UP Studio's if the printer doesn't
                         confirm; UP300 = stream (it reads stored jobs from its SD card and fails) */
   for( int i = 1; i < argc; i++ )
   {
     if( !strncmp(argv[i], "--method=", 9) ) method = atoi(argv[i] + 9);
+    else if( !strncmp(argv[i], "--bed=", 6) ) bed = atoi(argv[i] + 6);
+    else if( !strncmp(argv[i], "--standby=", 10) ) standby = atoi(argv[i] + 10);
     else file = argv[i];
   }
   if( !file )
@@ -49,6 +52,8 @@ int main(int argc, char const *argv[])
     printf("  --method=0  UP3D's way of storing the job (SD slot 5, block counter check)\n");
     printf("  --method=1  UP Studio's way (program buffer committed to slot 9)\n");
     printf("  --method=2  stream it while it prints (USB must stay connected until the end)\n");
+    printf("  --bed=T     streaming: heat the bed to T C and wait for it before sending\n");
+    printf("  --standby=S streaming: while the bed heats, turn a hot nozzle down to S C\n");
     printf("  default     UP Box+: method 0, then method 1 if the printer doesn't confirm the job\n");
     printf("              UP300:   method 2\n");
     return 0;
@@ -87,6 +92,19 @@ int main(int argc, char const *argv[])
     method = 2;
   }
 
+  if( method == 2 && bed > 0 && bed <= 110 )
+  {
+    int pr = UP3D_PreheatBed( bed, standby, 30 );
+    if( pr != 0 )
+    {
+      free( blks );
+      if( pr == 20 ) printf("Stopped on request while heating.\n");
+      else if( pr == 23 ) upl_error("the printer did not answer while heating");
+      UP3D_Close();
+      return pr;
+    }
+  }
+
   gettimeofday(&tval_start, NULL);
   int r = (method == 2) ? UP3D_StreamProgram( blks, n, progress )
                         : UP3D_SendProgramSD( blks, n, method < 0 ? 0 : method, progress );
@@ -112,6 +130,7 @@ int main(int argc, char const *argv[])
     case 8: upl_error("Selecting the stored job failed"); break;
     case 9: upl_error("StartResumeProgram failed"); break;
     case 20: printf("Stopped on request while streaming.\n"); break;
+    case 21: upl_error("the printer ended the job itself - see the line above"); break;
     default: upl_error("sending failed"); break;
   }
   UP3D_Close();

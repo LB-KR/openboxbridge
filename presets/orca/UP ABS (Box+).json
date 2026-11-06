@@ -8,7 +8,8 @@
         "UP ABS (Box+)"
     ],
     "compatible_printers": [
-        "UP Box+ USB"
+        "UP Box+ USB",
+        "UP300 USB"
     ],
     "compatible_printers_condition": "",
     "activate_air_filtration": [

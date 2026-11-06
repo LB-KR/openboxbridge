@@ -187,48 +187,7 @@ int main(int argc, char *argv[])
     }
   }
   
-  int32_t mstat = UP3D_GetMachineState();
-  int32_t pstat = UP3D_GetProgramState();
-  int32_t sstat = UP3D_GetSystemState();
-  float   temp  = UP3D_GetHeaterTemp(1);
-  int32_t layer = UP3D_GetLayer();
-  float   height = UP3D_GetHeight();
-  int32_t percent = UP3D_GetPercent();
-  int32_t tr = UP3D_GetTimeRemaining();
-
-  /* extra fields for the app: targets, heater states and head position */
-  int32_t nset = UP3D_GetHeaterSetTemp(1), non = UP3D_GetHeaterState(1), nreached = UP3D_GetHeaterTempReached(1);
-  int32_t bset = UP3D_GetHeaterSetTemp(3), bon = UP3D_GetHeaterState(3);
-  double steps[3] = { 644.0, 644.0, 3220.0 };
-  uint32_t serial = 0, model = 0;
-  {
-    TT_tagPrinterInfoHeader pihdr; TT_tagPrinterInfoName piname; TT_tagPrinterInfoData pidata; TT_tagPrinterInfoSet pisets[8];
-    if( UP3D_GetPrinterInfo( &pihdr, &piname, &pidata, pisets ) )
-    {
-      serial = pihdr.u32_printerserial;
-      model = pihdr.u32_printerid;
-      if( pidata.f_steps_mm_x > 1 ) steps[0] = pidata.f_steps_mm_x;
-      if( pidata.f_steps_mm_y > 1 ) steps[1] = pidata.f_steps_mm_y;
-      if( pidata.f_steps_mm_z > 1 ) steps[2] = pidata.f_steps_mm_z;
-    }
-  }
-  double a[3];
-  for( int k = 0; k < 3; k++ ) a[k] = (double)UP3D_GetAxisPosition(k+1) / steps[k];
-  /* slicer-frame X/Y before the bed-centre offset (same mapping as the converter) */
-  double gx = a[settings_box.x_axes] / settings_box.x_dir, gy = a[settings_box.y_axes] / settings_box.y_dir;
-
-  
-  float btemp = UP3D_GetHeaterTemp(3);   /* platform temperature (3rd heater channel) */
-  printf("%s;%s;%s;%0.2f;%d;%0.2f;%d;%d;%d;%d;%d;%d;%d;%0.2f;%0.2f;%0.2f;%0.2f;%u;%u\n",
-         UP3D_STR_MACHINE_STATE[mstat],
-         UP3D_STR_PROGRAM_STATE[pstat],
-         UP3D_STR_SYSTEM_STATE[sstat],
-         temp,
-         layer,
-         height,
-         percent,
-         tr,
-         nset, non, nreached, bset, bon, gx, gy, a[2], btemp, serial, model );
+  UP3D_PrintStatusLine("");   /* shared with the streaming code (up3d.c) */
   
   UP3D_Close();
   return 0;

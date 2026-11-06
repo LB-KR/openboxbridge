@@ -1,4 +1,5 @@
 using System;
+using System.Text.RegularExpressions;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -10,7 +11,7 @@ namespace OpenBoxBridge
 {
     static class Program
     {
-        public const string Version = "1.1 (UP300 test 5)";
+        public const string Version = "1.1 (UP300 test 6)";
         public const string WindowTitle = "OpenBoxBridge - for the UP Box+";
         const string MutexName = "Local\\OpenBoxBridge.Single";
 
@@ -77,7 +78,7 @@ namespace OpenBoxBridge
                 var g = GcodeInfo.Read(src);
                 if (g == null) return false;
                 printer = g.Printer.Trim().Trim('"');
-                return printer.Length > 0 && printer.IndexOf("UP Box", StringComparison.OrdinalIgnoreCase) < 0;
+                return printer.Length > 0 && !Regex.IsMatch(printer, @"UP ?Box|UP ?300|Afinia|H\+1", RegexOptions.IgnoreCase);
             }
             catch { return false; }
         }

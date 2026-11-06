@@ -220,6 +220,12 @@ namespace OpenBoxBridge
         /// <summary>Ends printer tools from this app's bin folder that are still running from an
         /// earlier session (e.g. a send that hung, or the app was closed mid-send). They hold the
         /// USB connection and cause "Access denied". Returns how many were ended.</summary>
+        static readonly DateTime appStart = DateTime.Now;
+        readonly HashSet<int> ourPids = new HashSet<int>();
+
+        /// <summary>Ends printer tools that hold the USB connection: ones this app started, or ones left
+        /// from before the app started (e.g. after a crash). A tool someone started by hand while the app
+        /// runs (UP300-diagnostics.bat) is left alone.</summary>
         public int KillLeftovers()
         {
             int n = 0;
@@ -233,6 +239,9 @@ namespace OpenBoxBridge
                         string path = "";
                         try { path = p.MainModule.FileName; } catch { }
                         if (path.Length > 0 && !path.StartsWith(bin, StringComparison.OrdinalIgnoreCase)) continue;
+                        bool ours; lock (gate) ours = ourPids.Contains(p.Id);
+                        bool older = false; try { older = p.StartTime < appStart; } catch { }
+                        if (!ours && !older) continue;
                         p.Kill(); n++;
                     }
                     catch { }
@@ -338,7 +347,7 @@ namespace OpenBoxBridge
                 psi.EnvironmentVariables["UP3D_STOPFILE"] = StopFile;
                 using (var p = Process.Start(psi))
                 {
-                    lock (gate) job.Proc = p;
+                    lock (gate) { job.Proc = p; ourPids.Add(p.Id); }
                     var errTask = p.StandardError.ReadToEndAsync();
                     var buf = new char[512];
                     var line = new StringBuilder();
@@ -366,6 +375,7 @@ namespace OpenBoxBridge
                         foreach (var l in err.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)) Emit(job, l);
                     }
                     code = p.ExitCode;
+                    lock (gate) ourPids.Remove(p.Id);
                 }
             }
             catch (Exception ex)
@@ -390,7 +400,7 @@ namespace OpenBoxBridge
         void Emit(Job job, string line)
         {
             job.LastOutput = DateTime.Now;
-            if (line.StartsWith("Streaming: started")) lock (gate) job.Streaming = true;
+            if (line.StartsWith("Streaming: started") || line.StartsWith("Heating the bed to")) lock (gate) job.Streaming = true;
             if (job.OnLine == null) return;
             try { ui.BeginInvoke(job.OnLine, line); } catch (InvalidOperationException) { }
         }
@@ -413,6 +423,7 @@ namespace OpenBoxBridge
         public string Path, Name, Time = "", Printer = "", Area = "";
         public double Grams, Metres;
         public int Layers;
+        public int BedTemp;   // first bed temperature the G-code sets (M140/M190 S..), 0 if none
         public Image Thumb;
         public long Size;
 
@@ -447,6 +458,7 @@ namespace OpenBoxBridge
                 if (m.Success) int.TryParse(m.Groups[1].Value, out g.Layers);
                 m = Regex.Match(all, @";\s*(?:printable_area|bed_shape)\s*=\s*([^\r\n]+)"); if (m.Success) g.Area = m.Groups[1].Value.Trim();
                 m = Regex.Match(all, @";\s*printer_settings_id\s*=\s*([^\r\n]+)"); if (m.Success) g.Printer = m.Groups[1].Value.Trim();
+                m = Regex.Match(head, @"^M1[49]0\s+S([1-9]\d*)", RegexOptions.Multiline); if (m.Success) int.TryParse(m.Groups[1].Value, out g.BedTemp);
                 g.Thumb = Thumbnail(head);
                 lock (cache) { cache[key] = g; }
                 return g;

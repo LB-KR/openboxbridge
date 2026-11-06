@@ -53,5 +53,10 @@ is in [`up3d-changes.diff`](up3d-changes.diff).
 - Streaming stops on request: the app names a file in `UP3D_STOPFILE`; when it appears, the
   stream sends no more data, stops the job with `UP3D_StopProgram` (the `up3dstatus stop`
   sequence, moved into `up3d.c`) and exits with code 20. Used by `up3dload` and `up3dctl`.
+- Streaming reports the printer status every 10 s (`UP3D_PrintStatusLine`, the `up3dstatus`
+  line, now shared), notices when the printer ends the job itself (exit code 21, heaters off,
+  "Printer details" line) and turns the heaters off on a stall or USB failure.
+- `up3dload --bed=T --standby=S`: heat the bed and wait for the measured temperature before
+  streaming (UP300).
 - `up3dsnap` also saves the raw info answers and the USB product id.
 - `tools/usbcap.py` reads `.pcap` and `.pcapng` captures. See [UP300.md](UP300.md).

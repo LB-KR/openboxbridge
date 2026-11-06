@@ -4,6 +4,7 @@
 
 #include "up3d.h"
 #include "up3dcomm.h"
+#include "up3dconf.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -716,6 +717,60 @@ int UP3D_SendProgramSD( const UP3D_BLK *blks, uint32_t n, int method, up3d_progr
 }
 
 ///////////////////////////////////////////
+// One status line for the app (moved here from up3dstatus so that the streaming tool,
+// which holds the USB connection for the whole print, can report the same fields).
+// Fields: machine;program;system;nozzle;layer;height;percent;remaining;nozzle set;nozzle on;
+//         nozzle reached;bed set;bed on;X;Y;Z;bed;serial;model
+///////////////////////////////////////////
+
+void UP3D_PrintStatusLine(const char *prefix)
+{
+  int32_t mstat = UP3D_GetMachineState();
+  int32_t pstat = UP3D_GetProgramState();
+  int32_t sstat = UP3D_GetSystemState();
+  float   temp  = UP3D_GetHeaterTemp(1);
+  int32_t layer = UP3D_GetLayer();
+  float   height = UP3D_GetHeight();
+  int32_t percent = UP3D_GetPercent();
+  int32_t tr = UP3D_GetTimeRemaining();
+
+  /* extra fields for the app: targets, heater states and head position */
+  int32_t nset = UP3D_GetHeaterSetTemp(1), non = UP3D_GetHeaterState(1), nreached = UP3D_GetHeaterTempReached(1);
+  int32_t bset = UP3D_GetHeaterSetTemp(3), bon = UP3D_GetHeaterState(3);
+  double steps[3] = { 644.0, 644.0, 3220.0 };
+  uint32_t serial = 0, model = 0;
+  {
+    TT_tagPrinterInfoHeader pihdr; TT_tagPrinterInfoName piname; TT_tagPrinterInfoData pidata; TT_tagPrinterInfoSet pisets[8];
+    if( UP3D_GetPrinterInfo( &pihdr, &piname, &pidata, pisets ) )
+    {
+      serial = pihdr.u32_printerserial;
+      model = pihdr.u32_printerid;
+      if( pidata.f_steps_mm_x > 1 ) steps[0] = pidata.f_steps_mm_x;
+      if( pidata.f_steps_mm_y > 1 ) steps[1] = pidata.f_steps_mm_y;
+      if( pidata.f_steps_mm_z > 1 ) steps[2] = pidata.f_steps_mm_z;
+    }
+  }
+  double a[3];
+  for( int k = 0; k < 3; k++ ) a[k] = (double)UP3D_GetAxisPosition(k+1) / steps[k];
+  /* slicer-frame X/Y before the bed-centre offset (same mapping as the converter) */
+  double gx = a[settings_box.x_axes] / settings_box.x_dir, gy = a[settings_box.y_axes] / settings_box.y_dir;
+
+  float btemp = UP3D_GetHeaterTemp(3);   /* platform temperature (3rd heater channel) */
+  printf("%s%s;%s;%s;%0.2f;%d;%0.2f;%d;%d;%d;%d;%d;%d;%d;%0.2f;%0.2f;%0.2f;%0.2f;%u;%u\n",
+         prefix ? prefix : "", UP3D_STR_MACHINE_STATE[mstat],
+         UP3D_STR_PROGRAM_STATE[pstat],
+         UP3D_STR_SYSTEM_STATE[sstat],
+         temp,
+         layer,
+         height,
+         percent,
+         tr,
+         nset, non, nreached, bset, bon, gx, gy, a[2], btemp, serial, model );
+  
+  fflush(stdout);
+}
+
+///////////////////////////////////////////
 // Stopping the running program (moved here from up3dstatus so that the streaming code
 // can stop a job on the USB connection it already holds).
 ///////////////////////////////////////////
@@ -801,10 +856,67 @@ static bool _up3d_stop_requested(void)
   return true;
 }
 
+/* Bed preheat before a streamed job (UP300). The converter can only wait a fixed time for
+   the bed (the UP Box+ gives no "bed ready" signal) and the UP300 bed heats slower, so the
+   streaming tool heats the bed first and waits for the measured temperature. A nozzle that
+   is already hot (e.g. after Extrude) is turned down to nozzle_standby so it doesn't ooze.
+   Uses the same parameter blocks as "up3dstatus bed". Returns 0 ready, 20 stop requested
+   (heaters off), 22 not hot after timeout_min (heaters off), 23 printer not answering. */
+int UP3D_PreheatBed(int target, int nozzle_standby, int timeout_min)
+{
+  if( target <= 0 ) return 0;
+  if( _up3d_stopfile() ) remove( _up3d_stopfile() );
+  float bed = UP3D_GetHeaterTemp(3);
+  int32_t nset = UP3D_GetHeaterSetTemp(1), non = UP3D_GetHeaterState(1);
+  UP3D_BLK blk;
+  if( !UP3D_ClearProgramBuf() ) return 23;
+  UP3D_PROG_BLK_Power(&blk,true); UP3D_WriteBlock(&blk);
+  UP3D_PROG_BLK_SetParameter(&blk,0x35,0); UP3D_WriteBlock(&blk);
+  UP3D_PROG_BLK_SetParameter(&blk,0x43,target); UP3D_WriteBlock(&blk);
+  UP3D_PROG_BLK_SetParameter(&blk,PARA_BED_TEMP,target); UP3D_WriteBlock(&blk);
+  UP3D_PROG_BLK_SetParameter(&blk,PARA_HEATER_BED_ON,90*30); UP3D_WriteBlock(&blk);   /* 90 min countdown, the job sets its own */
+  bool standby = non && nozzle_standby > 0 && nset > nozzle_standby;
+  if( standby )
+  {
+    UP3D_PROG_BLK_SetParameter(&blk,0x41,nozzle_standby); UP3D_WriteBlock(&blk);
+    UP3D_PROG_BLK_SetParameter(&blk,PARA_NOZZLE1_TEMP,nozzle_standby); UP3D_WriteBlock(&blk);
+  }
+  UP3D_PROG_BLK_Stop(&blk); UP3D_WriteBlock(&blk);
+  if( !UP3D_StartResumeProgram() ) return 23;
+  printf("Heating the bed to %d C before streaming (now %.0f C)%s\n", target, bed,
+         standby ? " - nozzle turned down to standby meanwhile" : "");
+  fflush(stdout);
+  uint32_t t0 = _ms_now(), t_stat = 0;
+  for(;;)
+  {
+    if( _up3d_stop_requested() )
+    {
+      remove( _up3d_stopfile() );
+      printf("Heating: stop requested\n");
+      UP3D_StopProgram();
+      return 20;
+    }
+    bed = UP3D_GetHeaterTemp(3);
+    if( bed >= target - 2 ) { printf("Bed ready: %.0f C\n", bed); fflush(stdout); return 0; }
+    if( _ms_now() - t_stat > 10000 ) { UP3D_PrintStatusLine("Status;"); t_stat = _ms_now(); }
+    if( _ms_now() - t0 > (uint32_t)timeout_min * 60000u )
+    {
+      printf("ERROR: the bed only reached %.0f C of %d C in %d minutes\n", bed, target, timeout_min);
+      UP3D_StopProgram();
+      return 22;
+    }
+    usleep( 500000 );
+  }
+}
+
 /* Streams a program into the printer's program buffer and runs it while it is still
    arriving (how UP Studio 3 sends moves to the UP300). The USB cable has to stay
-   connected until everything is sent. Returns 0, 4 (clear), 6 (write/no answer),
-   9 (start) or 20 (stopped on request: no more data sent, UP3D_StopProgram run). */
+   connected until everything is sent. Every 10 s it prints a status line ("Status;" + the
+   up3dstatus fields) for the app, and checks that the printer is still running the job.
+   Returns 0, 4 (clear), 6 (write/no answer), 9 (start), 20 (stopped on request: no more
+   data sent, UP3D_StopProgram run) or 21 (the printer ended the job itself, e.g.
+   "JogCmd Error"; heaters turned off). On 6 and 21 the heaters are turned off if the
+   printer still answers. */
 int UP3D_StreamProgram( const UP3D_BLK *blks, uint32_t n, up3d_progress_fn progress )
 {
   if( _up3d_stopfile() ) remove( _up3d_stopfile() );   /* a request left over from earlier */
@@ -812,7 +924,8 @@ int UP3D_StreamProgram( const UP3D_BLK *blks, uint32_t n, up3d_progress_fn progr
   printf("Streaming: started (%u blocks). Stop in the app ends the job.\n", n);
   fflush(stdout);
   bool started = false;
-  uint32_t i = 0, t_last = _ms_now(), t_beat = t_last;
+  uint32_t i = 0, t_last = _ms_now(), t_beat = t_last, t_stat = 0, t_start = 0;
+  int not_running = 0;
   while( i < n )
   {
     if( _up3d_stop_requested() )
@@ -825,26 +938,62 @@ int UP3D_StreamProgram( const UP3D_BLK *blks, uint32_t n, up3d_progress_fn progr
       fflush(stdout);
       return 20;
     }
+    if( _ms_now() - t_stat > 10000 )
+    {
+      UP3D_PrintStatusLine("Status;");
+      t_stat = _ms_now();
+      /* the printer ends a job by itself on an error (seen: "JogCmd Error"): it goes Idle
+         and takes no more data. Two checks in a row, so a slow state change isn't mistaken. */
+      if( started && _ms_now() - t_start > 15000 )
+      {
+        int32_t ms = UP3D_GetMachineState();
+        /* only Idle (3) or System Error (0) count: a running job can also report Jogging (1) */
+        if( ms == 3 || ms == 0 ) not_running++; else not_running = 0;
+        if( not_running >= 2 )
+        {
+          int32_t ss = UP3D_GetSystemState(), ps = UP3D_GetProgramState();
+          /* details for finding the cause: internal status (1 = stop at limit, 4 = unknown command ...),
+             limit errors per axis and where the head is */
+          printf("\nPrinter details: internal status %d, X limit %d, Y limit %d, axis steps %d %d %d\n",
+                 (int)UP3D_GetParameter(0x0F), (int)UP3D_GetParameter(0x1E), (int)UP3D_GetParameter(0x1F),
+                 (int)UP3D_GetAxisPosition(1), (int)UP3D_GetAxisPosition(2), (int)UP3D_GetAxisPosition(3));
+          UP3D_PrintStatusLine("Status;");
+          printf("ERROR: the printer ended the job itself after %u of %u blocks were sent: %s (%s, %s)\n",
+                 i, n, UP3D_STR_SYSTEM_STATE[ss], UP3D_STR_MACHINE_STATE[ms], UP3D_STR_PROGRAM_STATE[ps]);
+          fflush(stdout);
+          int r = UP3D_StopProgram();
+          printf("Heaters off (stop result %d)\n", r);
+          fflush(stdout);
+          return 21;
+        }
+      }
+    }
     int64_t fb = _up3d_free_blocks();
     if( fb < 0 )
     {
-      if( _ms_now() - t_last > 5000 ) { printf("ERROR: the printer stopped answering\n"); return 6; }
+      if( _ms_now() - t_last > 5000 ) { printf("ERROR: the printer stopped answering\n"); _heaters_off_now(); return 6; }
       usleep( 100000 );
       continue;
     }
     if( fb == 0 )
     {
-      if( !started ) { if( !UP3D_StartResumeProgram() ) return 9; started = true; }
+      if( !started ) { if( !UP3D_StartResumeProgram() ) return 9; started = true; t_start = _ms_now(); }
       /* long enough for heating the bed from cold before the first layer */
-      if( _ms_now() - t_last > 45 * 60 * 1000 ) { printf("ERROR: the printer took no new data for 45 minutes\n"); return 6; }
-      if( _ms_now() - t_beat > 10000 ) { printf("Streaming: waiting for the printer (%u of %u blocks sent)\n", i, n); fflush(stdout); t_beat = _ms_now(); }
+      if( _ms_now() - t_last > 45 * 60 * 1000 )
+      {
+        printf("ERROR: the printer took no new data for 45 minutes\n");
+        int r = UP3D_StopProgram();
+        printf("Heaters off (stop result %d)\n", r);
+        return 6;
+      }
+      if( _ms_now() - t_beat > 60000 ) { printf("Streaming: %u of %u blocks sent\n", i, n); fflush(stdout); t_beat = _ms_now(); }
       usleep( 200000 );
       continue;
     }
     uint32_t c = (uint32_t)fb;
     if( c > 72 ) c = 72;
     if( c > n - i ) c = n - i;
-    if( !UP3D_WriteBlocks( blks + i, (uint8_t)c ) ) return 6;
+    if( !UP3D_WriteBlocks( blks + i, (uint8_t)c ) ) { printf("ERROR: sending to the printer failed\n"); _heaters_off_now(); return 6; }
     i += c;
     t_last = _ms_now();
     if( progress ) progress( i, n );
