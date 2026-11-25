@@ -67,6 +67,7 @@ int main(int argc, char *argv[])
     case 'u': //up300 (experimental)
       memcpy( &settings, &settings_up300, sizeof(settings) );
       up3d_movef_max_xy = 50; up3d_movef_max_z = 10;
+      up3d_f_cpu = F_CPU_UP300;   /* the UP300's stepper timer (parameter 0x4B) */
       break;
       
     case 'C': //cetus  
@@ -77,6 +78,10 @@ int main(int argc, char *argv[])
     default:
       printf("ERROR: Uknown machine type: %s\n\n",argv[1] );
       print_usage_and_exit();
+  }
+  { /* timer override (UP3D_FCPU = the printer's parameter 0x4B), for testing other models */
+    const char *f = getenv("UP3D_FCPU");
+    if( f && atof(f) >= 1e6 ) up3d_f_cpu = atof(f);
   }
   { /* extruder steps/mm override (set by the app after an extrude calibration) */
     const char *e = getenv("UP3D_ESTEPS");

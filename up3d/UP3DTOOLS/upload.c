@@ -36,8 +36,8 @@ static void progress(uint32_t sent, uint32_t total)
 int main(int argc, char const *argv[])
 {
   const char *file = NULL;
-  int method = -1;
-  int bed = 0, standby = 0;   /* streaming only: heat the bed to this first (UP300), nozzle standby */   /* -1 = automatic: UP Box+ = UP3D's way, then UP Studio's if the printer doesn't
+  int bed = 0, standby = 0;   /* streaming only: heat the bed to this first (UP300), nozzle standby */
+  int method = -1;   /* -1 = automatic: UP Box+ = UP3D's way, then UP Studio's if the printer doesn't
                         confirm; UP300 = stream (it reads stored jobs from its SD card and fails) */
   for( int i = 1; i < argc; i++ )
   {
@@ -85,6 +85,14 @@ int main(int argc, char const *argv[])
   printf("Job: %u blocks\n", n);
   fflush(stdout);
 
+  if( model == 0x2783 || UP3DCOMM_GetPID() == 0x2790 )
+  {
+    /* the converter times UP300 moves for an 80 MHz stepper timer (parameter 0x4B) */
+    uint32_t fcpu = UP3D_GetParameter(0x4B);
+    if( fcpu != 80000000 )
+      printf("WARNING: this printer's stepper timer is %u Hz, but UP300 jobs are converted for 80000000 Hz - speeds will be %.2fx what the slicer set\n",
+             fcpu, fcpu ? 80000000.0 / fcpu : 0.0);
+  }
   if( method < 0 && (model == 0x2783 || UP3DCOMM_GetPID() == 0x2790) )
   {
     printf("UP300: streaming the job (stored jobs give 'SD Card Reading Error' on this printer)\n");

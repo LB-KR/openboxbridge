@@ -1,4 +1,4 @@
-OpenBoxBridge 1.1 - UP300 TEST VERSION (test 7)
+OpenBoxBridge 1.1 - UP300 TEST VERSION (test 8)
 ================================================
 
 Thanks for testing! UP300 support is new and has only been worked out from your USB
@@ -6,7 +6,16 @@ recordings. Please go through these steps IN ORDER and stop at the first one tha
 doesn't behave. Keep the app's Stop button ready: the printer's own button does NOT stop
 a job that is streamed from the app.
 
-New in test 7 (if steps 1-7 were fine before, go straight to step 8):
+New in test 8 - PLEASE DO STEP 7 (EXTRUDE) AGAIN, then step 8:
+  - SPEED FIX: until now every move on the UP300 ran 1.6x too fast (the converter timed
+    moves for the UP Box+'s 50 MHz clock; the UP300's is 80 MHz). Prints now run at the
+    speeds the slicer set, so they take longer than before - that's expected.
+  - The extruder ran 1.6x too fast as well, so the 235 steps/mm from test 5 may change:
+    please do the extrude test (step 7) again and tell me the length.
+  - Use the "UP300 USB" printer profile (or one with a print area centred on 0,0, e.g.
+    X -120..+120, Y -100..+100). A print area that isn't centred moves the print off-centre.
+
+Also in test 7:
   - its own UP300 slicer profiles: process "UP300 0.15mm Fine / 0.20mm / 0.25mm Draft" and
     filament "UP PLA (UP300)" / "UP ABS (UP300)". Choosing printer "UP300 USB" picks them.
   - a warning before printing a file with slicer settings that move the nozzle up or down
@@ -120,7 +129,8 @@ New value for Setup > UP300 section > "Extruder steps/mm":
   new = current value x 50 / pushed
 e.g. current 213.5, pushed 40 mm  ->  213.5 x 50 / 40 = 266.9
 Enter it, and repeat the test until it pushes 49-51 mm. Tell me the final value.
-(Test 5 pushed 51 mm at 235, which is fine. Test 6 starts with 235.)
+(Test 5 pushed 51 mm at 235, but the extruder ran 1.6x too fast then. Measure again at 235
+and tell me the length, even if it's 49-51 mm.)
 
 
 8. FIRST PRINT

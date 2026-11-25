@@ -18,6 +18,8 @@
 
 #include "up3dconf.h"
 
+double up3d_f_cpu = F_CPU_DEFAULT;
+
 settings_t settings;
 
 settings_t settings_mini = { 

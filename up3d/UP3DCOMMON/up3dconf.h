@@ -22,7 +22,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define F_CPU 50000000
+/* Stepper timer base the move timing is calculated for (printer parameter 0x4B).
+   UP Box+ and older models: 50 MHz. UP300: 80 MHz - with 50 MHz it ran every move 1.6x
+   too fast (test 6/7). Set by up3dtranscode per machine type. */
+extern double up3d_f_cpu;
+#define F_CPU up3d_f_cpu
+#define F_CPU_DEFAULT 50000000
+#define F_CPU_UP300   80000000
 
 //#define X_INSERT_STEP_CORRECTIONS
 
