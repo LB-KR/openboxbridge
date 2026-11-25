@@ -210,9 +210,9 @@
         "Normal Lift"
     ],
     "default_filament_profile": [
-        "UP PLA (Box+)"
+        "UP PLA (UP300)"
     ],
-    "default_print_profile": "UP Box+ 0.20mm",
+    "default_print_profile": "UP300 0.20mm",
     "wipe_distance": [
         "1.5",
         "1.5",

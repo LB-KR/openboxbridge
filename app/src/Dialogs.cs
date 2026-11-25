@@ -234,7 +234,8 @@ namespace OpenBoxBridge
             double limit = current > 50 ? current - 1.0 : MidStepMax;   // stay clear of the nozzle
             if (target > limit + 0.001)
             {
-                status.Text = current > 50 ? "That's within 1 mm of the saved nozzle height (" + current.ToString("0.0", Inv) + ") - use the small steps from " + limit.ToString("0", Inv) + "."
+                status.Text = current > 50 ? "Go to stops 1 mm below the nozzle height saved on the Setup page (" + current.ToString("0.0", Inv) + " mm), to protect the nozzle. " +
+                                             "Use the small steps from " + limit.ToString("0", Inv) + " mm. If " + current.ToString("0.0", Inv) + " isn't right, that's fine: what you measure here replaces it."
                                            : "Up to " + limit.ToString("0", Inv) + " mm here; use the small steps after that.";
                 return;
             }

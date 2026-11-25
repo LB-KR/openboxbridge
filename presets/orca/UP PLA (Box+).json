@@ -8,8 +8,7 @@
         "UP PLA (Box+)"
     ],
     "compatible_printers": [
-        "UP Box+ USB",
-        "UP300 USB"
+        "UP Box+ USB"
     ],
     "compatible_printers_condition": "",
     "activate_air_filtration": [

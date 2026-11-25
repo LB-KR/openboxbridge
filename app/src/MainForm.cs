@@ -115,7 +115,6 @@ namespace OpenBoxBridge
                 jobList.ItemHeight = (int)(72 * k);
                 if (File.Exists(LatestPath)) latestStamp = File.GetLastWriteTimeUtc(LatestPath);
                 Log("OpenBoxBridge " + Program.Version + " ready - USB printing for the Tiertime UP Box+.");
-                if (S.GetD("NozzleHeight") < 50) Log("First time: enter your nozzle height on the Setup page, then find the bed centre.");
                 string f = openFile;
                 if (string.IsNullOrEmpty(f) && File.Exists(S.GetS("LastFile"))) f = S.GetS("LastFile");
                 if (!string.IsNullOrEmpty(f) && File.Exists(f)) LoadGcode(f);
@@ -498,6 +497,18 @@ namespace OpenBoxBridge
             btnNozzle = B(pr, "Calibrate...", 146, 58, 130, 32, BtnKind.Secondary, CalibrateNozzle, Theme.GTarget);
             T(pr, "mm the bed rises to the nozzle, measured with Calibrate. Bigger = bed closer to the nozzle.", 288, 60, 280, 40, Theme.Small, Theme.Faint);
             numNozzle.ValueChanged += (s, e) => { S.Set("NozzleHeight", (double)numNozzle.Value); UpdateSetupState(); UpdatePos(); };
+            // a value typed in on this page is the user's own measurement: it counts as set (test 6:
+            // typed values were saved, but printing still warned that nothing had been measured)
+            decimal nozzleAtEnter = 0;
+            numNozzle.Enter += (s, e) => nozzleAtEnter = numNozzle.Value;
+            numNozzle.Validated += (s, e) =>
+            {
+                if (numNozzle.Value == nozzleAtEnter || numNozzle.Value < 50) return;
+                nozzleAtEnter = numNozzle.Value;
+                S.Set("NozzleHeight", (double)numNozzle.Value); S.Set("NozzleMeasured", true); S.Save();
+                Log("Nozzle height saved: " + ((double)numNozzle.Value).ToString("0.00", Inv) + " mm (typed in on the Setup page).");
+                UpdateSetupState();
+            };
 
             T(pr, "Bed centre X", 16, 108, 120, 18, Theme.Small, Theme.Muted);
             numOX = N(pr, 16, 128, 120, -500, 500, 2, 0.5m, S.GetD("OffsetX"));
@@ -505,6 +516,20 @@ namespace OpenBoxBridge
             numOY = N(pr, 146, 128, 120, -500, 500, 2, 0.5m, S.GetD("OffsetY"));
             numOX.ValueChanged += (s, e) => S.Set("OffsetX", (double)numOX.Value);
             numOY.ValueChanged += (s, e) => S.Set("OffsetY", (double)numOY.Value);
+            decimal oxAtEnter = 0, oyAtEnter = 0;
+            numOX.Enter += (s, e) => oxAtEnter = numOX.Value;
+            numOY.Enter += (s, e) => oyAtEnter = numOY.Value;
+            EventHandler centreTyped = (s, e) =>
+            {
+                var n = (NumericUpDown)s;
+                if (n.Value == (n == numOX ? oxAtEnter : oyAtEnter)) return;
+                if (n == numOX) oxAtEnter = n.Value; else oyAtEnter = n.Value;
+                S.Set("OffsetX", (double)numOX.Value); S.Set("OffsetY", (double)numOY.Value);
+                S.Set("Calibrated", true); S.Set("CentreVersion", 2.0); S.Save();
+                Log("Bed centre saved: X " + ((double)numOX.Value).ToString("0.##", Inv) + ", Y " + ((double)numOY.Value).ToString("0.##", Inv) + " (typed in on the Setup page).");
+                UpdateSetupState();
+            };
+            numOX.Validated += centreTyped; numOY.Validated += centreTyped;
             btnCentre = B(pr, "Find bed centre...", 284, 124, 180, 32, BtnKind.Secondary, FindCentre, Theme.GTarget);
 
             T(pr, "Motion", 16, 172, 120, 18, Theme.Small, Theme.Muted);
@@ -918,6 +943,20 @@ namespace OpenBoxBridge
                 !Confirm("This file was sliced with the UP Box+ printer profile, but a UP300 is connected.\n\n" +
                     "The UP300 can't reach the edges of the UP Box+ print area: a move there stops the print with \"JogCmd Error\". " +
                     "Slice it with the 'UP300 USB' printer profile (Setup > Slicer presets installs it).\n\nPrint anyway?", "UP Box+ profile on a UP300", MessageBoxIcon.Warning)) return;
+            int zMoves = GcodeInfo.CountZPrintMoves(path);
+            var zRisk = g != null ? new List<string>(g.ZRisk) : new List<string>();
+            if (zRisk.Count > 0 || zMoves > 500)
+            {
+                string why = zRisk.Count > 0 ? "  - " + string.Join("\n  - ", zRisk) + "\n\n" : "";
+                if (!Confirm("This file has slicer settings that raise or lower the nozzle while it prints" +
+                    (zMoves > 0 ? " (" + zMoves.ToString("N0", Inv) + " moves)" : "") + ":\n\n" + why +
+                    "UP printers can only move the height with a separate jog command for each of these moves, " +
+                    "and with this many the printer can stop part-way with \"JogCmd Error\".\n\n" +
+                    "Change them in the slicer, slice again and print that file. The " + (IsUp300 ? "UP300" : "UP Box+") +
+                    " process profiles from Setup > Slicer presets already have them off.\n\nPrint this file anyway?",
+                    "Slicer settings that can stop the print", MessageBoxIcon.Warning)) return;
+                Log("Printing despite slicer settings that move Z while printing (" + zMoves + " moves): " + string.Join("; ", zRisk));
+            }
             if (isPrinting && !Confirm("The printer is already running a job. Sending a new one replaces it. Continue?", "Printer busy", MessageBoxIcon.Warning)) return;
             double left = S.GetD("SpoolStart") - S.GetD("SpoolUsed");
             if (g != null && g.Grams > 0 && g.Grams > left &&
@@ -984,8 +1023,13 @@ namespace OpenBoxBridge
                     if (sc == StreamPrinterEnded)
                     {
                         jobState.Text = "The printer ended the job - see Console.";
-                        Alert("The printer ended the print by itself.\n\n" + err.Replace("ERROR: ", "") + "\n\nThe heaters are off. The head is moved away so you can reach the print.", MessageBoxIcon.Error);
-                        Park();
+                        // test 6: after its error the printer stayed "busy" until Stop was pressed again, and an
+                        // automatic Initialise didn't help - so stop once more and leave Initialise to the user
+                        Ctl("up3dstatus.exe", new[] { "stop" }, "Stopping once more so the printer resets after its error...", null);
+                        Alert("The printer ended the print by itself.\n\n" + err.Replace("ERROR: ", "") +
+                              "\n\nThe heaters are off. If the printer still looks busy, press Stop.\nTo move the head away from the print, use Initialise on the Dashboard." +
+                              (err.Contains("JogCmd") ? "\n\n\"JogCmd Error\" usually comes from slicer settings that move the nozzle up or down while printing (scarf joint seam, spiral vase, sloped z-hop)." : ""),
+                              MessageBoxIcon.Error);
                         return;
                     }
                     if (sc == 22) { jobState.Text = "The bed didn't heat up - not printed."; Alert("The bed didn't reach its temperature in 30 minutes, so the job wasn't sent.\n\n" + err.Replace("ERROR: ", "") + "\n\nThe heaters are off.", MessageBoxIcon.Error); return; }
@@ -1319,6 +1363,8 @@ namespace OpenBoxBridge
             if (numESteps != null) numESteps.Value = Clamp(numESteps, S.GetD("ESteps") > 1 ? S.GetD("ESteps") : Up300ESteps);
             UpdateUp300Card();
             UpdateSetupState(); UpdatePos();
+            if (S.GetD("NozzleHeight") < 50 && (prev.Length == 0 || known))
+                Log("This printer has no nozzle height yet: on the Setup page, find the bed centre, then Calibrate.");
             if (prev.Length == 0) { Log("Printer serial " + sn + " connected - the current calibration is saved for it."); return; }
             if (known)
             {
@@ -1458,7 +1504,7 @@ namespace OpenBoxBridge
             if (SlicerRunning("orca-slicer", "OrcaSlicer")) { Alert("Please close OrcaSlicer first, then press the button again."); return; }
             int n = InstallJsonPresets(src, orcaRoot);
             Log("Orca presets installed (" + n + " files).");
-            Alert("Installed " + n + " preset files.\n\nOpen OrcaSlicer and choose:\n  Printer:   UP Box+ USB (UP300 USB for a UP300)\n  Process:   UP Box+ 0.20mm (or 0.15mm Fine / 0.25mm Draft)\n  Filament:  UP PLA (Box+) or UP ABS (Box+)", MessageBoxIcon.Information);
+            Alert("Installed " + n + " preset files.\n\nOpen OrcaSlicer and choose:\n  UP Box+:\n    Printer:   UP Box+ USB\n    Process:   UP Box+ 0.20mm (or 0.15mm Fine / 0.25mm Draft)\n    Filament:  UP PLA (Box+) or UP ABS (Box+)\n  UP300:\n    Printer:   UP300 USB\n    Process:   UP300 0.20mm (or 0.15mm Fine / 0.25mm Draft)\n    Filament:  UP PLA (UP300) or UP ABS (UP300)\n\nKeep Scarf joint seam = None and Spiral vase off: they stop UP printers part-way.", MessageBoxIcon.Information);
         }
 
         void InstallBambu()
@@ -1470,7 +1516,7 @@ namespace OpenBoxBridge
             if (SlicerRunning("bambu-studio", "BambuStudio")) { Alert("Please close Bambu Studio first, then press the button again."); return; }
             int n = InstallJsonPresets(src, root);
             Log("Bambu Studio presets installed (" + n + " files).");
-            Alert("Installed " + n + " preset files.\n\nOpen Bambu Studio and choose:\n  Printer:   UP Box+ USB or UP300 USB (under user presets)\n  Process:   UP Box+ 0.20mm (or 0.15mm Fine / 0.25mm Draft)\n  Filament:  UP PLA (Box+) or UP ABS (Box+)\n\nThen slice and use Export G-code (not Print).", MessageBoxIcon.Information);
+            Alert("Installed " + n + " preset files.\n\nOpen Bambu Studio and choose:\n  (under user presets)\n  UP Box+:  printer UP Box+ USB, process UP Box+ 0.20mm, filament UP PLA (Box+)\n  UP300:    printer UP300 USB, process UP300 0.20mm, filament UP PLA (UP300)\n\nThen slice and use Export G-code (not Print). Keep Scarf seam = None and Spiral vase off.", MessageBoxIcon.Information);
         }
 
         void InstallPrusa()
@@ -1494,7 +1540,7 @@ namespace OpenBoxBridge
                 }
             }
             Log("PrusaSlicer presets installed (" + n + " files).");
-            Alert("Installed " + n + " preset files.\n\nOpen PrusaSlicer (Expert mode shows every setting) and choose:\n  Printer:   UP Box+ USB (UP300 USB for a UP300)\n  Print:     UP Box+ 0.20mm (or 0.15mm Fine / 0.25mm Draft)\n  Filament:  UP PLA (Box+) or UP ABS (Box+)\n\nThen slice and use Export G-code.", MessageBoxIcon.Information);
+            Alert("Installed " + n + " preset files.\n\nOpen PrusaSlicer (Expert mode shows every setting) and choose:\n  UP Box+:  printer UP Box+ USB, print UP Box+ 0.20mm, filament UP PLA (Box+)\n  UP300:    printer UP300 USB, print UP300 0.20mm, filament UP PLA (UP300)\n\nThen slice and use Export G-code. Keep Scarf seam = Nowhere and Spiral vase off.", MessageBoxIcon.Information);
         }
 
         // =====================================================================================

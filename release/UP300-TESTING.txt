@@ -1,4 +1,4 @@
-OpenBoxBridge 1.1 - UP300 TEST VERSION (test 6)
+OpenBoxBridge 1.1 - UP300 TEST VERSION (test 7)
 ================================================
 
 Thanks for testing! UP300 support is new and has only been worked out from your USB
@@ -6,7 +6,18 @@ recordings. Please go through these steps IN ORDER and stop at the first one tha
 doesn't behave. Keep the app's Stop button ready: the printer's own button does NOT stop
 a job that is streamed from the app.
 
-New in test 6 (if steps 1-7 were fine before, go straight to step 8):
+New in test 7 (if steps 1-7 were fine before, go straight to step 8):
+  - its own UP300 slicer profiles: process "UP300 0.15mm Fine / 0.20mm / 0.25mm Draft" and
+    filament "UP PLA (UP300)" / "UP ABS (UP300)". Choosing printer "UP300 USB" picks them.
+  - a warning before printing a file with slicer settings that move the nozzle up or down
+    while it prints (scarf joint seam, spiral vase, sloped z-hop): in test 6 the scarf seam
+    made the printer stop with "JogCmd Error"
+  - a nozzle height or bed centre typed in on the Setup page now counts as set
+  - after the printer ends a job by itself, the app stops it once more (so it resets) and
+    leaves Initialise to you
+  - clearer "Go to" message in the Calibrate window
+
+Also in test 6:
   - a separate "UP300 USB" printer profile for the slicers, with a print area the UP300
     can reach (a move outside its travel stops the print with "JogCmd Error")
   - if the printer ends a job by itself, the app says why at once and turns the heaters off
@@ -117,14 +128,17 @@ Enter it, and repeat the test until it pushes 49-51 mm. Tell me the final value.
 Only once 1-7 are good. Close the slicer, then Setup > Slicer presets > OrcaSlicer (or
 PrusaSlicer / Bambu Studio). This also points the slicer at wherever this folder is now;
 press it again if you move the folder. Then in the slicer use:
-  Printer:   "UP300 USB"  (new - NOT "UP Box+ USB": its print area is bigger than the
-             UP300 can reach; the app warns if a file was sliced with it)
-  Process:   "UP Box+ 0.20mm"   Filament: "UP PLA (Box+)"  (they work for both printers)
-Re-slice the 20 mm cube with "UP300 USB" and print it. The app heats the bed first (the
+  Printer:   "UP300 USB"  (NOT "UP Box+ USB": its print area is bigger than the UP300
+             can reach; the app warns if a file was sliced with it)
+  Process:   "UP300 0.20mm"   Filament: "UP PLA (UP300)"
+You can change infill, fuzzy skin, speeds and temperatures, but keep these as they are:
+  Scarf joint seam = None, Spiral vase = off, Z-hop type = Normal Lift.
+Re-slice the 20 mm cube with these and print it. The app heats the bed first (the
 Dashboard shows the temperatures), then sends the job.
 If the printer stops by itself, the app now says so with "Printer details" in the Console.
 Please send the Console text and the G-code file - that tells me exactly what it didn't like.
 Please also stop one print part-way with Stop in the app, and tell me if it stopped
-within a few seconds and the head moved away.
+within a few seconds and the head moved away. And tell me if the cube comes out the full
+20 mm tall with a closed top.
 
 Thanks again!

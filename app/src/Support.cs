@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -424,6 +425,10 @@ namespace OpenBoxBridge
         public double Grams, Metres;
         public int Layers;
         public int BedTemp;   // first bed temperature the G-code sets (M140/M190 S..), 0 if none
+        /// <summary>Slicer settings that move Z while printing (scarf seam, spiral vase, sloped z-hop).
+        /// The UP printers can only move Z with a separate jog command, and a job with thousands of
+        /// them stops with "JogCmd Error" (UP300 test 6). Empty if none are on.</summary>
+        public List<string> ZRisk = new List<string>();
         public Image Thumb;
         public long Size;
 
@@ -459,11 +464,53 @@ namespace OpenBoxBridge
                 m = Regex.Match(all, @";\s*(?:printable_area|bed_shape)\s*=\s*([^\r\n]+)"); if (m.Success) g.Area = m.Groups[1].Value.Trim();
                 m = Regex.Match(all, @";\s*printer_settings_id\s*=\s*([^\r\n]+)"); if (m.Success) g.Printer = m.Groups[1].Value.Trim();
                 m = Regex.Match(head, @"^M1[49]0\s+S([1-9]\d*)", RegexOptions.Multiline); if (m.Success) int.TryParse(m.Groups[1].Value, out g.BedTemp);
+                g.ZRisk = ZRiskSettings(all);
                 g.Thumb = Thumbnail(head);
                 lock (cache) { cache[key] = g; }
                 return g;
             }
             catch { return null; }
+        }
+
+        static string Setting(string all, string key)
+        {
+            var m = Regex.Match(all, @";\s*" + key + @"\s*=\s*([^\r\n]*)");
+            return m.Success ? m.Groups[1].Value.Trim().Trim('"') : null;
+        }
+
+        /// <summary>Slicer settings (Orca, Bambu Studio, PrusaSlicer) that make printing moves change Z.</summary>
+        public static List<string> ZRiskSettings(string all)
+        {
+            var r = new List<string>();
+            string v;
+            v = Setting(all, "seam_slope_type");              // Orca / Bambu: none, external, all
+            if (v != null && v.Length > 0 && v != "none") r.Add("Scarf joint seam (" + v + ") - set it to None");
+            v = Setting(all, "scarf_seam_placement");         // PrusaSlicer: nowhere, contours, everywhere
+            if (v != null && v.Length > 0 && v != "nowhere") r.Add("Scarf seam (" + v + ") - set it to Nowhere");
+            v = Setting(all, "spiral_mode"); if (v == null) v = Setting(all, "spiral_vase");
+            if (v == "1" || v == "true") r.Add("Spiral vase mode - turn it off");
+            v = Setting(all, "z_hop_types");                  // Orca / Bambu: Auto Lift, Normal Lift, Slope Lift, Spiral Lift
+            string hop = Setting(all, "z_hop");
+            bool hopOn = hop == null || hop.Split(',').Any(x => { double d; return double.TryParse(x, NumberStyles.Float, CultureInfo.InvariantCulture, out d) && d > 0; });
+            if (v != null && hopOn && Regex.IsMatch(v, "Slope|Spiral|Auto", RegexOptions.IgnoreCase)) r.Add("Z-hop type (" + v + ") - use Normal Lift");
+            v = Setting(all, "travel_ramping_lift");          // PrusaSlicer
+            if (v != null && v.Split(',').Any(x => x.Trim() == "1")) r.Add("Ramping travel lift - turn it off");
+            return r;
+        }
+
+        /// <summary>Counts printing moves (with E) that also change Z. A few hundred is normal for some
+        /// slicers; thousands mean a scarf seam or spiral vase.</summary>
+        public static int CountZPrintMoves(string path)
+        {
+            int n = 0;
+            try
+            {
+                foreach (var line in File.ReadLines(path))
+                    if (line.StartsWith("G1 ") && line.IndexOf(" Z", StringComparison.Ordinal) > 0 && line.IndexOf(" E", StringComparison.Ordinal) > 0
+                        && (line.IndexOf(" X", StringComparison.Ordinal) > 0 || line.IndexOf(" Y", StringComparison.Ordinal) > 0)) n++;
+            }
+            catch { }
+            return n;
         }
 
         static string ReadChunk(FileStream fs, long start, int len)

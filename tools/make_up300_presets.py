@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
-"""Make the "UP300 USB" printer preset for OrcaSlicer, Bambu Studio and PrusaSlicer from the
-UP Box+ ones (run make_presets.py first), and let the print and filament presets be used with
-both printers.
+"""Make the UP300 presets for OrcaSlicer, Bambu Studio and PrusaSlicer from the UP Box+ ones
+(run make_presets.py first):
+  printer   "UP300 USB"
+  process   "UP300 0.15mm Fine", "UP300 0.20mm", "UP300 0.25mm Draft"
+  filament  "UP PLA (UP300)", "UP ABS (UP300)"
+The UP300 process and filament presets only show for the UP300 USB printer, and the UP Box+ ones
+only for UP Box+ USB, so each printer gets its own set by default.
+
+Settings that move Z while printing are kept off in the UP300 process presets (test 6): the UP
+printers can only move Z with a separate "jog" command, and a job with thousands of them (scarf
+joint seam, spiral vase) stops with "JogCmd Error". So: scarf seam none, spiral vase off; the
+printer preset uses a Normal Lift z-hop.
 
 Why a separate printer: the UP300's travel around the bed centre is smaller than the UP Box+
 print area. With the bed centre at X 125, Y 108 the head reaches about X -122..+137 and
@@ -68,14 +77,31 @@ def json_slicer(folder):
     m['printable_height'] = HEIGHT
     m['machine_start_gcode'] = START
     m['machine_end_gcode'] = END
+    m['default_print_profile'] = 'UP300 0.20mm'
+    m['default_filament_profile'] = ['UP PLA (UP300)']
     jsave(os.path.join(d, UP3 + '.json'), m)
-    for f in os.listdir(d):
-        if not f.endswith('.json') or f in (BOX + '.json', UP3 + '.json'): continue
+    for f in sorted(os.listdir(d)):
+        if not f.endswith('.json') or f in (BOX + '.json', UP3 + '.json') or 'UP300' in f: continue
         p = jload(os.path.join(d, f))
         cp = p.get('compatible_printers')
-        if isinstance(cp, list) and BOX in cp and UP3 not in cp:
-            p['compatible_printers'] = cp + [UP3]
+        if not (isinstance(cp, list) and BOX in cp): continue
+        if cp != [BOX]:   # the UP Box+ presets are for the UP Box+ only again
+            p['compatible_printers'] = [BOX]
             jsave(os.path.join(d, f), p)
+        q = json.loads(json.dumps(p))
+        q['compatible_printers'] = [UP3]
+        for k, v in list(q.items()):
+            if isinstance(v, str): q[k] = up300_name(v)
+            elif isinstance(v, list) and v and all(isinstance(x, str) for x in v) and k != 'compatible_printers':
+                q[k] = [up300_name(x) for x in v]
+        if q.get('type') == 'process' or 'print_settings_id' in q:
+            q['seam_slope_type'] = 'none'
+            q['spiral_mode'] = '0'
+        jsave(os.path.join(d, up300_name(f[:-5]) + '.json'), q)
+
+
+def up300_name(v):
+    return v.replace('UP Box+ USB', UP3).replace('(Box+)', '(UP300)').replace('UP Box+ ', 'UP300 ')
 
 
 def ini_esc(s):
@@ -102,11 +128,19 @@ def prusa():
         out.append(line)
     open(os.path.join(d, 'printer', UP3 + '.ini'), 'w', newline='\n', encoding='utf-8').write('\n'.join(out) + '\n')
     for kind in ('print', 'filament'):
-        for f in os.listdir(os.path.join(d, kind)):
+        for f in sorted(os.listdir(os.path.join(d, kind))):
+            if 'UP300' in f: continue
             p = os.path.join(d, kind, f)
             s = open(p, encoding='utf-8').read()
-            s2 = s.replace('compatible_printers = "UP Box+ USB"\n', 'compatible_printers = "UP Box+ USB";"UP300 USB"\n')
+            s2 = s.replace('compatible_printers = "UP Box+ USB";"UP300 USB"\n', 'compatible_printers = "UP Box+ USB"\n')
             if s2 != s: open(p, 'w', newline='\n', encoding='utf-8').write(s2)
+            u = s2.replace('compatible_printers = "UP Box+ USB"\n', 'compatible_printers = "UP300 USB"\n')
+            u = re.sub(r'^# UP Box\+ USB (\w+) preset', r'# UP300 USB \1 preset', u, flags=re.M)
+            u = u.replace('filament_notes = UP Box+ -', 'filament_notes = UP300 -')
+            if kind == 'print':
+                u = re.sub(r'^scarf_seam_placement = .*$', 'scarf_seam_placement = nowhere', u, flags=re.M)
+                u = re.sub(r'^spiral_vase = .*$', 'spiral_vase = 0', u, flags=re.M)
+            open(os.path.join(d, kind, up300_name(f[:-4]) + '.ini'), 'w', newline='\n', encoding='utf-8').write(u)
 
 
 json_slicer('orca')

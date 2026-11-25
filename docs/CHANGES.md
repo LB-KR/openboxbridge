@@ -59,4 +59,6 @@ is in [`up3d-changes.diff`](up3d-changes.diff).
 - `up3dload --bed=T --standby=S`: heat the bed and wait for the measured temperature before
   streaming (UP300).
 - `up3dsnap` also saves the raw info answers and the USB product id.
+- (test 7, app only) Warning before printing a file whose slicer settings move Z while printing;
+  UP300 process/filament presets; typed calibration values count as set.
 - `tools/usbcap.py` reads `.pcap` and `.pcapng` captures. See [UP300.md](UP300.md).

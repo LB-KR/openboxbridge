@@ -6,8 +6,7 @@
     "version": "2.3.1.0",
     "print_settings_id": "UP Box+ 0.15mm Fine",
     "compatible_printers": [
-        "UP Box+ USB",
-        "UP300 USB"
+        "UP Box+ USB"
     ],
     "compatible_printers_condition": "",
     "bottom_shell_layers": "5",

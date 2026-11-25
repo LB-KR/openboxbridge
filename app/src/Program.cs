@@ -11,7 +11,7 @@ namespace OpenBoxBridge
 {
     static class Program
     {
-        public const string Version = "1.1 (UP300 test 6)";
+        public const string Version = "1.1 (UP300 test 7)";
         public const string WindowTitle = "OpenBoxBridge - for the UP Box+";
         const string MutexName = "Local\\OpenBoxBridge.Single";
 
